@@ -5,7 +5,8 @@ Usebrowse is a local-first browser agent built as an independent implementation.
 ## Current features
 
 - Reads the active page, its links, fields, and buttons; lists tabs.
-- Navigates, clicks, fills forms, scrolls, reloads, and moves through tab history.
+- Navigates across tabs, opens/closes/switches tabs, clicks, fills forms, scrolls, waits for text, reloads, and moves through tab history.
+- Remembers the recent chat locally in the extension.
 - Human approval before navigation, clicking, filling, reload, and history actions.
 - Local bridge bound to `127.0.0.1`, one-time browser pairing code, and an MCP stdio server.
 - Works with Ollama or an OpenAI-compatible endpoint. No app account or telemetry is built in.

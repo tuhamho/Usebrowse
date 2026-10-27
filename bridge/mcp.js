@@ -9,6 +9,9 @@ const endpoint = process.env.USEBROWSE_WS || 'ws://127.0.0.1:18791/mcp';
 const tools = [
   { name: 'get_page', description: 'Read the active page text, links and form controls.', inputSchema: { type: 'object', properties: {} } },
   { name: 'list_tabs', description: 'List tabs in the current browser window.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'new_tab', description: 'Open a new browser tab.', inputSchema: { type: 'object', properties: { url: { type: 'string' } } } },
+  { name: 'switch_tab', description: 'Switch to a browser tab by ID.', inputSchema: { type: 'object', properties: { tabId: { type: 'integer' } }, required: ['tabId'] } },
+  { name: 'close_tab', description: 'Close a browser tab.', inputSchema: { type: 'object', properties: { tabId: { type: 'integer' } } } },
   { name: 'navigate', description: 'Navigate the active tab to an http or https URL.', inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
   { name: 'click', description: 'Click an element using a selector or its snapshot index.', inputSchema: { type: 'object', properties: { selector: { type: 'string' } }, required: ['selector'] } },
   { name: 'fill', description: 'Fill a text field using a selector or its snapshot index.', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } }, required: ['selector', 'value'] } },
@@ -16,8 +19,8 @@ const tools = [
   { name: 'go_back', description: 'Go back in the active tab.', inputSchema: { type: 'object', properties: {} } },
   { name: 'go_forward', description: 'Go forward in the active tab.', inputSchema: { type: 'object', properties: {} } },
   { name: 'reload', description: 'Reload the active page.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'wait_for_text', description: 'Wait briefly for text to appear on the active page.', inputSchema: { type: 'object', properties: { text: { type: 'string' }, timeoutMs: { type: 'integer' } }, required: ['text'] } },
 ];
-const safe = new Set(['get_page', 'list_tabs', 'scroll']);
 let browser;
 let nextId = 0;
 const pending = new Map();
@@ -77,3 +80,4 @@ rl.on('line', async (line) => {
     if (response) write(response);
   } catch (err) { write(error(null, -32603, err.message)); }
 });
+rl.on('close', () => { browser?.close(); process.exit(0); });
