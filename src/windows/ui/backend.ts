@@ -241,7 +241,7 @@ export async function tauriBackend(): Promise<Backend> {
     onPairingLaunch: (listener) => unlisten(listen('pairing-launch', () => listener())),
     onNoticeLink: (listener) => unlisten(listen<string>('notice-link', (event) => listener(event.payload))),
     onWindowFocus: (listener) => unlisten(getCurrentWindow().onFocusChanged(({ payload: focused }) => focused && listener())),
-    openUrl: (url) => opener.openUrl(url),
+    openUrl: (url) => invoke('open_external_url', { url }),
     reveal: (path) => opener.revealItemInDir(path),
     setWindowTheme: (theme) => getCurrentWindow().setTheme(theme),
   };

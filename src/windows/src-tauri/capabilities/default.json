@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The Browsentic window: its own commands, events, and opening links and folders.",
+  "description": "The Tuhamho Brow window: app commands, events, links, and folders.",
   "windows": ["main"],
   "permissions": [
     "core:default",

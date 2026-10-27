@@ -44,14 +44,14 @@ pub fn build(app: &AppHandle) -> tauri::Result<Tray> {
             &toggle,
             &restart,
             &PredefinedMenuItem::separator(app)?,
-            &item("open", "Open Browsentic", true)?,
+            &item("open", "Open Tuhamho Brow", true)?,
             &item("quit", "Quit", true)?,
         ],
     )?;
 
     let plain = app.default_window_icon().map(|icon| icon.clone().to_owned());
     let dotted = plain.as_ref().map(|icon| Image::new_owned(with_dot(icon.rgba(), icon.width(), icon.height()), icon.width(), icon.height()));
-    let mut tray = TrayIconBuilder::with_id("browsentic").tooltip("Browsentic").menu(&menu).show_menu_on_left_click(false);
+    let mut tray = TrayIconBuilder::with_id("tuhamho-brow").tooltip("Tuhamho Brow").menu(&menu).show_menu_on_left_click(false);
     if let Some(icon) = &plain {
         tray = tray.icon(icon.clone());
     }
@@ -78,7 +78,7 @@ impl Tray {
         self.status.set_text(&status.summary)?;
         self.request.set_text(status.waiting.as_deref().unwrap_or(NOBODY_WAITING))?;
         self.request.set_enabled(status.waiting.is_some())?;
-        self.icon.set_tooltip(Some(status.waiting.as_deref().map_or("Browsentic".to_string(), |waiting| format!("Browsentic: {waiting}"))))?;
+        self.icon.set_tooltip(Some(status.waiting.as_deref().map_or("Tuhamho Brow".to_string(), |waiting| format!("Tuhamho Brow: {waiting}"))))?;
         self.icon.set_icon(if status.waiting.is_some() { self.dotted.clone() } else { self.plain.clone() })?;
         self.toggle.set_text(&status.toggle)?;
         self.toggle.set_enabled(status.can_toggle)?;

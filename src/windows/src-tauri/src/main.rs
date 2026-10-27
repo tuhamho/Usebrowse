@@ -129,6 +129,44 @@ fn open_extensions_page(path: PathBuf) -> Result<()> {
     system::open_extensions_page(&path)
 }
 
+/// Opens a validated web link in the user's default browser through Windows ShellExecute.
+#[tauri::command]
+fn open_external_url(url: String) -> Result<()> {
+    let parsed = url::Url::parse(&url).map_err(|error| format!("Invalid link: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Only HTTP and HTTPS links can be opened here.".into());
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        let operation: Vec<u16> = std::ffi::OsStr::new("open").encode_wide().chain(Some(0)).collect();
+        let target: Vec<u16> = std::ffi::OsStr::new(parsed.as_str()).encode_wide().chain(Some(0)).collect();
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if (result as isize) <= 32 {
+            return Err(format!("Windows could not open this link (ShellExecute error {}).", result as isize));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("Opening links this way is only configured for Windows.".into())
+    }
+}
+
 #[tauri::command]
 async fn agents_on_path(state: State<'_, App>, bins: Vec<String>) -> Result<Vec<String>> {
     let extra: Vec<PathBuf> = state.node.lock().await.iter().map(NodeInstall::dir).collect();
@@ -350,6 +388,7 @@ fn main() {
             log_tail,
             notices_allowed,
             npm_install,
+            open_external_url,
             open_extensions_page,
             pair_requests,
             post_notices,

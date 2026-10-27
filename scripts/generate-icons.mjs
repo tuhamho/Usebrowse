@@ -13,3 +13,4 @@ for (const size of [16, 32, 48, 96, 128]) {
   copyFileSync(join(sourceDir, file), join(outDir, file));
   console.log(`copied ${join(outDir, file)}`);
 }
+copyFileSync(join(sourceDir, '32.png'), join(outDir, 'tuhamho-brow-tab.png'));
