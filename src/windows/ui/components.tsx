@@ -43,7 +43,7 @@ const DOT: Record<Tint, string> = {
 
 export function Card({ children, className, padded = true }: { children: ReactNode; className?: string; padded?: boolean }) {
   return (
-    <section className={cn('panel-card w-full rounded-2xl bg-surface/60 backdrop-blur-md', padded && 'p-5', className)}>
+    <section className={cn('panel-card w-full rounded-2xl', padded && 'p-5', className)}>
       {children}
     </section>
   );
@@ -68,7 +68,7 @@ export function Pill({ text, tint = 'dim', icon: Icon }: { text: string; tint?: 
 }
 
 export function GlowDot({ tint, pulsing = false }: { tint: Tint; pulsing?: boolean }) {
-  return <span className={cn('glow-dot inline-block size-2 shrink-0 rounded-full', DOT[tint], pulsing && 'animate-pulse')} />;
+  return <span className={cn('inline-block size-2 shrink-0 rounded-full', DOT[tint], pulsing && 'opacity-70')} />;
 }
 
 export function Spinner({ className }: { className?: string }) {
@@ -84,7 +84,7 @@ export function PrimaryButton({ icon: Icon, tint = 'brand', className, children,
       {...props}
       className={cn(
         'inline-flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-semibold transition duration-200 active:scale-[0.98] disabled:opacity-40',
-        tint === 'danger' ? 'bg-destructive text-ink hover:brightness-110' : 'glow-brand bg-brand text-ground hover:brightness-110',
+        tint === 'danger' ? 'bg-destructive text-ink hover:brightness-110' : 'bg-brand text-ground hover:brightness-110',
         className,
       )}
     >
@@ -159,7 +159,7 @@ export function NoticeBanner({ text, isError }: { text: string; isError: boolean
     <div
       role="status"
       className={cn(
-        'flex max-w-[620px] items-center gap-2.5 rounded-[14px] border bg-surface/90 px-4 py-2.75 shadow-2xl backdrop-blur-md',
+        'flex max-w-[620px] items-center gap-2.5 rounded-[14px] border bg-surface px-4 py-2.75 shadow-xl',
         isError ? 'border-destructive/40' : 'border-lime/40',
       )}
     >
@@ -190,9 +190,8 @@ export function OfflineHint({ what, model, daemonOff }: { what: string; model: M
 export function Backdrop() {
   return (
     <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden bg-ground">
-      <div className="dot-grid absolute inset-0 [mask-image:radial-gradient(ellipse_at_top,#000,transparent_70%)]" />
-      <div className="backdrop-wash backdrop-wash-brand" />
-      <div className="backdrop-wash backdrop-wash-ember" />
+      <div className="app-grain absolute inset-0" />
+      <div className="app-warm-light absolute inset-0" />
     </div>
   );
 }
@@ -272,7 +271,7 @@ export function ConfirmDialog({
       role="dialog"
       aria-modal
       aria-label={title}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ground/60 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ground/90"
       onClick={dismissible ? onCancel : undefined}
     >
       <form

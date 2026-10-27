@@ -37,9 +37,9 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
   return (
     <div className="space-y-4.5">
       <Card>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-3">
           <Logo className="size-12 shrink-0 text-brand" />
-          <div className="min-w-0 flex-1">
+          <div className="min-w-[190px] flex-[1_1_220px]">
             <SectionTitle title="Tuhamho Brow" subtitle={`${state.info?.version ?? ''} · ${t('your browser’s superpower · free and open source, Apache 2.0.', 'tự động hóa trình duyệt · mã nguồn mở theo Apache 2.0.')}`} />
           </div>
           <ExternalButton onClick={open(LINKS.site)}>

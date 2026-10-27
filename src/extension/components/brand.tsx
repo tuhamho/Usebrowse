@@ -1,5 +1,6 @@
 import { cn } from '@/lib/utils';
 import appIcon from '@/extension/assets/brand/tuhamho-brow-icon.png';
+import catArt from '@/extension/assets/brand/tuhamho-brow-cat.webp';
 
 /** The supplied Tuhamho Brow cat artwork, used consistently in the app and extension. */
 export function Logo({ className }: { className?: string; drawn?: boolean }) {
@@ -17,4 +18,9 @@ export function Wordmark({ className }: { className?: string }) {
       </span>
     </span>
   );
+}
+
+/** The full mascot illustration for welcome and start-page hero sections. */
+export function CatMascot({ className }: { className?: string }) {
+  return <img src={catArt} className={cn('object-cover', className)} alt="Tuhamho Brow orange cat mascot" />;
 }

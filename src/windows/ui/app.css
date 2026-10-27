@@ -17,44 +17,14 @@ body {
   user-select: text;
 }
 
-.backdrop-wash {
-  position: absolute;
-  border-radius: 9999px;
-  animation: drift 11s ease-in-out infinite alternate;
+.app-grain {
+  opacity: 0.11;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.86' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.22'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
 }
 
-.backdrop-wash-brand {
-  width: 900px;
-  height: 900px;
-  left: calc(50% - 450px - 300px);
-  top: calc(50% - 450px - 270px);
-  background: radial-gradient(closest-side, color-mix(in oklch, var(--brand) 20%, transparent), transparent);
-  --drift-x: 80px;
-  --drift-y: -60px;
-}
-
-.backdrop-wash-ember {
-  width: 860px;
-  height: 860px;
-  left: calc(50% - 430px + 340px);
-  top: calc(50% - 430px + 295px);
-  background: radial-gradient(closest-side, color-mix(in oklch, var(--ember) 16%, transparent), transparent);
-  --drift-x: -80px;
-  --drift-y: 70px;
-}
-
-[data-theme="daylight"] .backdrop-wash-brand {
-  background: radial-gradient(closest-side, color-mix(in oklch, var(--brand) 12%, transparent), transparent);
-}
-
-[data-theme="daylight"] .backdrop-wash-ember {
-  background: radial-gradient(closest-side, color-mix(in oklch, var(--ember) 9%, transparent), transparent);
-}
-
-@keyframes drift {
-  to {
-    transform: translate(var(--drift-x), var(--drift-y));
-  }
+.app-warm-light {
+  background: radial-gradient(ellipse 48% 42% at 72% 0%, color-mix(in oklch, var(--brand) 8%, transparent), transparent 100%);
 }
 
 /* A ring drawn with a conic gradient and cut out by a radial mask: the orb's and the beacon's arcs. */
@@ -103,7 +73,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .backdrop-wash,
   .spin,
   .spin-reverse,
   .breathe,

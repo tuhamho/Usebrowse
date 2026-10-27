@@ -100,9 +100,9 @@ function SessionRow({ session, busy, onRename, onUnpair }: { session: SessionSum
   const name = session.label ?? session.browser;
   const paired = `${PAIRED_BY[session.pairedBy ?? 'code'] ?? 'Paired'} ${ago(session.pairedAt)}`;
   return (
-    <div className="flex items-center gap-3 rounded-xl bg-ground-2 p-3">
+    <div className="flex flex-wrap items-center gap-3 rounded-xl bg-ground-2 p-3">
       <GlowDot tint={session.connected ? 'lime' : 'faint'} pulsing={session.connected} />
-      <div className="min-w-0 flex-1 space-y-0.75">
+      <div className="min-w-[190px] flex-[1_1_220px] space-y-0.75">
         {name && <p className="truncate text-[13px] font-medium text-ink">{name}</p>}
         <p className={name ? 'truncate font-mono text-xs text-ink-dim select-text' : 'truncate font-mono text-xs text-ink select-text'}>
           {session.label && session.browser && session.label !== session.browser && <span className="font-sans">{session.browser} · </span>}
@@ -112,15 +112,17 @@ function SessionRow({ session, busy, onRename, onUnpair }: { session: SessionSum
           {t(SOURCE_LABEL[session.source ?? 'unpacked'], 'Bản cục bộ')} · v{session.extensionVersion} · {paired} · {t('seen', 'hoạt động')} {ago(session.lastSeenAt)}
         </p>
       </div>
-      <Pill text={session.connected ? t('Connected', 'Đã kết nối') : t('Away', 'Ngoại tuyến')} tint={session.connected ? 'lime' : 'dim'} />
-      {onRename && (
-        <QuietButton icon={PencilLine} disabled={busy} onClick={onRename}>
-          {t('Rename', 'Đổi tên')}
+      <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        <Pill text={session.connected ? t('Connected', 'Đã kết nối') : t('Away', 'Ngoại tuyến')} tint={session.connected ? 'lime' : 'dim'} />
+        {onRename && (
+          <QuietButton icon={PencilLine} disabled={busy} onClick={onRename}>
+            {t('Rename', 'Đổi tên')}
+          </QuietButton>
+        )}
+        <QuietButton tint="danger" disabled={busy} onClick={onUnpair}>
+          {t('Unpair', 'Hủy ghép nối')}
         </QuietButton>
-      )}
-      <QuietButton tint="danger" disabled={busy} onClick={onUnpair}>
-        {t('Unpair', 'Hủy ghép nối')}
-      </QuietButton>
+      </div>
     </div>
   );
 }

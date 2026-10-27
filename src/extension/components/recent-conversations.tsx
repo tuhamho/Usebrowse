@@ -12,6 +12,7 @@ export function RecentConversations({
   onWatch,
   onOpen,
   onShowAll,
+  showHeading = true,
 }: {
   /** Runs going on in other tabs right now. */
   running: TabSession[];
@@ -20,11 +21,13 @@ export function RecentConversations({
   onOpen: (sessionId: string) => void;
   /** Absent in a browser with no side panel to list them in. */
   onShowAll?: () => void;
+  /** Hide the default title when a parent card already provides one. */
+  showHeading?: boolean;
 }) {
   if (!running.length && !recent.length) return null;
   return (
     <section aria-labelledby="recent-conversations" className="space-y-2">
-      <div className="flex items-baseline justify-between gap-3 px-1">
+      {showHeading && <div className="flex items-baseline justify-between gap-3 px-1">
         <h2 id="recent-conversations" className="text-sm font-medium text-ink-dim">
           Recent conversations
         </h2>
@@ -33,7 +36,7 @@ export function RecentConversations({
             All conversations
           </button>
         )}
-      </div>
+      </div>}
       <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-ground/40">
         {running.map((session) => (
           <Row

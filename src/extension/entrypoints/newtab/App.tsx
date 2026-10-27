@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { PanelRight, SlidersHorizontal } from 'lucide-react';
+import { BriefcaseBusiness, GitPullRequest, Inbox, PanelRight, Play, Search, ShoppingBag, SlidersHorizontal } from 'lucide-react';
 import { browser } from 'wxt/browser';
 
 import { AgentChip } from '@/extension/components/agent-chip';
 import { AgentPicker } from '@/extension/components/agent-picker';
-import { Logo, Wordmark } from '@/extension/components/brand';
+import { CatMascot, Wordmark } from '@/extension/components/brand';
 import { Composer, type AttachedSkill } from '@/extension/components/composer';
 import { DaemonLink } from '@/extension/components/daemon-link';
 import { DropMask } from '@/extension/components/drop-mask';
@@ -38,7 +38,19 @@ import { hideSite } from '@/lib/settings/new-tab';
 
 type Sheet = 'connection' | 'agent' | 'customize';
 
-const RECENT = 4;
+const RECENT = 3;
+
+const QUICK_ACTIONS = [
+  { title: 'YouTube subscriptions', prompt: 'List the new videos from my YouTube subscriptions', icon: Play, detail: 'Catch up on new videos' },
+  { title: 'GitHub pull requests', prompt: 'List the pull requests waiting on my review', icon: GitPullRequest, detail: 'See what needs your review' },
+  { title: 'Unread email', prompt: 'Summarise my unread email', icon: Inbox, detail: 'Find messages that need a reply' },
+] as const;
+
+const TOPIC_GROUPS = [
+  { title: 'Everyday', icon: BriefcaseBusiness, prompts: ['Summarise my unread messages and highlight anything urgent', 'What should I take care of first today?'] },
+  { title: 'Research', icon: Search, prompts: ['Summarise the top stories on Hacker News', 'Compare a few reliable sources about a topic'] },
+  { title: 'Shopping', icon: ShoppingBag, prompts: ['Compare the best-reviewed noise-cancelling headphones', 'Find the best price for an item I am considering'] },
+] as const;
 
 const SETUP: Record<StatusBlocker, { text: string; action: string; sheet: Sheet }> = {
   unpaired: { text: 'This browser isn’t connected to Tuhamho Brow Bridge yet.', action: 'Set up the link', sheet: 'connection' },
@@ -114,6 +126,7 @@ export default function App({ onTurnOff }: { onTurnOff: () => void }) {
     [run.items, run.running],
   );
   const ideas = useMemo(() => suggestionsFor(frequent.sites.map((site) => site.host)), [frequent.sites]);
+  const siteIdeas = ideas.filter((idea) => !QUICK_ACTIONS.some(({ prompt }) => prompt === idea));
   const running = run.sessions.filter((session) => session.runId && session.sessionId !== run.sessionId);
   const recent = stored
     .filter((session) => session.id !== run.sessionId && !running.some((live) => live.sessionId === session.id))
@@ -166,10 +179,11 @@ export default function App({ onTurnOff }: { onTurnOff: () => void }) {
   }
 
   return (
-    <div className="relative flex min-h-screen flex-col overflow-x-clip">
-      <div aria-hidden className="dot-grid fade-radial pointer-events-none fixed inset-0" />
+    <div className="home-page relative flex min-h-screen flex-col overflow-x-clip bg-ground text-ink">
+      <div aria-hidden className="dot-grid pointer-events-none fixed inset-0" />
+      <div aria-hidden className="pointer-events-none fixed -top-44 left-1/2 size-[560px] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,color-mix(in_oklch,var(--brand)_10%,transparent)_0%,transparent_70%)]" />
 
-      <header className="relative z-20 flex items-center gap-2 border-b border-line/60 bg-ground/35 px-5 py-3.5 backdrop-blur-xl">
+      <header className="relative z-20 flex items-center gap-2 border-b border-line bg-ground px-5 py-3.5">
         <Wordmark />
         <div className="ml-auto flex items-center gap-1">
           <div className="relative">
@@ -206,20 +220,22 @@ export default function App({ onTurnOff }: { onTurnOff: () => void }) {
         </div>
       </header>
 
-      <main className="relative z-10 mx-auto flex w-full max-w-[48rem] flex-1 flex-col px-5 pt-[7vh] pb-16">
-        <div className="flex flex-col items-center text-center">
-          <span className="rounded-[20px] border border-brand/20 bg-surface/65 p-1.5 shadow-[0_14px_36px_-24px_var(--brand)]">
-            <Logo drawn className="size-10 text-brand" />
-          </span>
-          <p className="mt-5 font-mono text-[10px] font-semibold tracking-[0.22em] text-brand uppercase">Tuhamho Brow · Local agent</p>
-          <h1 className="mt-2 font-display text-[2rem] leading-tight font-semibold tracking-tight text-ink sm:text-[2.5rem]">
-            {hello}
-          </h1>
-          <p className="mt-2 max-w-[30rem] text-sm leading-relaxed text-ink-dim">Your browser is ready. Tell Tuhamho Brow what to do, or choose a starting point below.</p>
-        </div>
+      <main className="relative z-10 mx-auto flex w-full max-w-[72rem] flex-1 flex-col px-5 pt-7 pb-12 sm:px-8">
+        <section className="relative grid min-h-[176px] grid-cols-[minmax(0,1fr)_104px] items-center overflow-hidden rounded-[26px] border border-line bg-ground-2 px-5 py-5 sm:min-h-[210px] sm:grid-cols-[1fr_220px] sm:px-9 sm:py-5">
+          <div aria-hidden className="pointer-events-none absolute -right-28 -top-36 size-[440px] rounded-full bg-[radial-gradient(circle,color-mix(in_oklch,var(--brand)_13%,transparent)_0%,transparent_69%)]" />
+          <div className="relative z-10 py-1">
+            <p className="font-mono text-[10px] font-semibold tracking-[0.2em] text-brand uppercase">Tuhamho Brow <span className="text-ink-faint">/</span> Local agent</p>
+            <h1 className="mt-3 font-display text-3xl leading-tight font-semibold tracking-tight text-ink sm:text-[2.65rem]">{hello}</h1>
+            <p className="mt-2 max-w-[34rem] text-sm leading-relaxed text-ink-dim">Your browser is ready. Tell Tuhamho what to do, or pick a task to get started.</p>
+          </div>
+          <div className="pointer-events-none relative flex h-full min-h-[104px] items-end justify-center overflow-hidden sm:min-h-[190px]">
+            <CatMascot className="relative z-10 h-[110px] w-[110px] translate-y-2 rounded-full sm:h-[224px] sm:w-[224px] sm:translate-y-4" />
+            <span aria-hidden className="absolute bottom-1 size-[94px] rounded-full border border-brand/15 sm:bottom-3 sm:size-[190px]" />
+          </div>
+        </section>
 
-        <div className="relative mt-7">
-          <div aria-hidden className="home-halo pointer-events-none absolute -inset-x-24 -inset-y-16" />
+        <div className="relative mt-5">
+          <div aria-hidden className="home-halo pointer-events-none absolute -inset-x-10 -inset-y-8" />
           <div className="relative">
             <Composer
               size="hero"
@@ -240,7 +256,7 @@ export default function App({ onTurnOff }: { onTurnOff: () => void }) {
               onToggleActionCues={() => setActionCues(!actionCues)}
               onAttachSkill={setAttachedSkill}
               handsFree={false}
-              placeholder="Tell me what to do, or where to go…"
+              placeholder="Tell Tuhamho what to do, or where to go…"
               accessory={
                 <div className="relative min-w-0">
                   <AgentChip state={daemon?.agent} expanded={sheet === 'agent'} onClick={() => toggle('agent')} />
@@ -266,7 +282,7 @@ export default function App({ onTurnOff }: { onTurnOff: () => void }) {
           </div>
         </div>
 
-        <div className="mt-5">
+        <div className="mt-4">
           {setup ? (
             <div className="enters flex flex-wrap items-center justify-center gap-x-3 gap-y-2 rounded-2xl border border-amber/30 bg-amber/8 px-4 py-3 text-center">
               <p className="text-sm text-ink">{setup.text}</p>
@@ -281,38 +297,52 @@ export default function App({ onTurnOff }: { onTurnOff: () => void }) {
               onDecide={(toolId, allow) => run.decide(toolId, allow)}
               onDismiss={run.clear}
             />
-          ) : (
-            <ul aria-label="Suggestions" className="flex flex-wrap justify-center gap-2">
-              {ideas.map((text) => (
-                <li key={text}>
-                  <button
-                    type="button"
-                    onClick={() => use(text)}
-                    className="rounded-full border border-line bg-surface/45 px-3.5 py-2 text-xs text-ink-dim shadow-[inset_0_1px_0_rgb(255_255_255/3%)] transition-all duration-200 hover:-translate-y-0.5 hover:border-brand/35 hover:bg-brand/8 hover:text-ink"
-                  >
-                    {text}
-                  </button>
-                </li>
+          ) : null}
+        </div>
+
+        <section className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-12">
+          <div className="rounded-2xl border border-line bg-ground-2 p-4 sm:p-5 lg:col-span-7">
+            <BentoHeading eyebrow="Start here" title="Quick actions" />
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {QUICK_ACTIONS.map(({ title, prompt, icon: Icon, detail }) => (
+                <button key={title} type="button" onClick={() => use(prompt)} className="group min-h-[112px] rounded-xl border border-line bg-ground px-3.5 py-3 text-left transition-colors hover:border-brand/45 hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
+                  <span className="flex size-8 items-center justify-center rounded-lg border border-line bg-ground-2 text-brand"><Icon className="size-4" strokeWidth={1.7} /></span>
+                  <span className="mt-2.5 block text-[12px] font-semibold text-ink">{title}</span>
+                  <span className="mt-0.5 block text-[10px] text-ink-faint">{detail}</span>
+                </button>
               ))}
-            </ul>
-          )}
-        </div>
-
-        {choice.sites && (
-          <div className="mt-12">
-            <FrequentSites frequent={frequent} onHide={(host) => setChoice(hideSite(choice, host))} />
+            </div>
           </div>
-        )}
 
-        <div className="mt-10">
-          <RecentConversations
-            running={running}
-            recent={recent}
-            onWatch={watch}
-            onOpen={openConversation}
-            onShowAll={panel ? showAll : undefined}
-          />
-        </div>
+          <div className="rounded-2xl border border-line bg-ground-2 p-4 sm:p-5 lg:col-span-5">
+            <div className="flex items-start justify-between gap-2">
+              <BentoHeading eyebrow="Pick up where you left off" title="Recent commands" />
+              {recent.length > 0 && panel && <button type="button" onClick={showAll} className="pt-1 text-[10px] text-ink-faint hover:text-brand">View all</button>}
+            </div>
+            {running.length || recent.length ? (
+              <div className="mt-2"><RecentConversations running={running} recent={recent} onWatch={watch} onOpen={openConversation} onShowAll={panel ? showAll : undefined} showHeading={false} /></div>
+            ) : (
+              <p className="mt-4 rounded-xl border border-dashed border-line px-3 py-5 text-xs leading-relaxed text-ink-faint">Your recent tasks will appear here after you ask Tuhamho to do something.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="mt-3 rounded-2xl border border-line bg-ground-2 p-4 sm:p-5">
+          <BentoHeading eyebrow="Ideas for your next task" title="Explore by topic" />
+          <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+            {TOPIC_GROUPS.map(({ title, icon: Icon, prompts }) => (
+              <div key={title} className="rounded-xl border border-line bg-ground p-3.5">
+                <h3 className="flex items-center gap-2 text-xs font-semibold text-ink"><Icon className="size-3.5 text-brand" strokeWidth={1.8} />{title}</h3>
+                <div className="mt-2 space-y-1.5">
+                  {prompts.map((prompt) => <button key={prompt} type="button" onClick={() => use(prompt)} className="block w-full rounded-lg px-2 py-1.5 text-left text-[11px] leading-snug text-ink-dim transition-colors hover:bg-surface hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">{prompt}</button>)}
+                </div>
+              </div>
+            ))}
+          </div>
+          {!!siteIdeas.length && <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-line pt-3"><span className="mr-1 text-[10px] text-ink-faint">For your sites</span>{siteIdeas.map((text) => <button key={text} type="button" onClick={() => use(text)} className="rounded-lg border border-line px-2.5 py-1.5 text-[10px] text-ink-dim transition-colors hover:border-brand/40 hover:text-ink">{text}</button>)}</div>}
+        </section>
+
+        {choice.sites && <div className="mt-4"><FrequentSites frequent={frequent} onHide={(host) => setChoice(hideSite(choice, host))} /></div>}
       </main>
 
       {showTools && (
@@ -327,4 +357,8 @@ export default function App({ onTurnOff }: { onTurnOff: () => void }) {
       {dragging && <DropMask connected={connected} maxBytes={MAX_STORED_FILE_BYTES} />}
     </div>
   );
+}
+
+function BentoHeading({ eyebrow, title }: { eyebrow: string; title: string }) {
+  return <div><p className="text-[9px] font-semibold tracking-[0.15em] text-brand uppercase">{eyebrow}</p><h2 className="mt-0.5 font-display text-sm font-semibold text-ink">{title}</h2></div>;
 }

@@ -8,6 +8,7 @@ import { useLanguage } from '../language';
 import { Card, CopyButton, GlowDot, PathRow, Pill, PrimaryButton, QuietButton, SectionTitle, Step, type Tint } from '../components';
 import type { DaemonPhase, Model, State } from '../model';
 import type { PairingCode } from '../backend';
+import { CatMascot } from '@/extension/components/brand';
 import { UpdateCard } from './update-card';
 
 const TINT: Record<DaemonPhase, Tint> = { on: 'lime', off: 'faint', starting: 'amber', stopping: 'amber' };
@@ -38,10 +39,11 @@ export function OverviewView({ model, state }: { model: Model; state: State }) {
     <div className="space-y-4.5">
       {state.update && <UpdateCard model={model} state={state} />}
 
-      <Card className="relative overflow-hidden p-6.5 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-brand/60 before:to-transparent">
-        <div className="relative flex items-center gap-6">
+      <Card className="relative overflow-hidden p-5 sm:p-6">
+        <div className="relative flex items-center gap-4 sm:gap-6">
           <PowerOrb phase={daemon} onToggle={() => void model.setDaemon(daemon === 'off')} />
           <div className="min-w-0 flex-1 space-y-2">
+            <p className="font-mono text-[10px] font-semibold tracking-[0.16em] text-brand uppercase">{welcome(t)}</p>
             <div className="flex items-center gap-2">
               <GlowDot tint={TINT[daemon]} pulsing={daemon === 'on'} />
               <span className={cn('text-[11px] font-bold tracking-[0.11em] uppercase', TEXT_TINT[TINT[daemon]])}>{t(LABEL[daemon], ({ on: 'Đang chạy', off: 'Đã tắt', starting: 'Đang khởi động', stopping: 'Đang dừng' } as const)[daemon])}</span>
@@ -60,11 +62,12 @@ export function OverviewView({ model, state }: { model: Model; state: State }) {
               </QuietButton>
             )}
           </div>
+          <CatMascot className="hidden size-[56px] shrink-0 rounded-full border border-line object-cover sm:block md:size-[72px] xl:size-[112px]" />
         </div>
       </Card>
 
       {status && lock && (
-    <div className="grid grid-cols-2 gap-3 2xl:grid-cols-4">
+    <div className="grid grid-cols-2 gap-2.5 2xl:grid-cols-4">
           <Stat label={t('Address', 'Địa chỉ')} value={`127.0.0.1:${status.port}`} icon={Network} />
           <Stat label={t('Bridge', 'Bridge')} value={`v${status.daemonVersion}`} detail={`pid ${lock.pid}`} icon={Cpu} />
           <Stat
@@ -112,23 +115,13 @@ function PowerOrb({ phase, onToggle }: { phase: DaemonPhase; onToggle: () => voi
       disabled={moving}
       title={on ? 'Turn Tuhamho Brow Bridge off' : 'Turn Tuhamho Brow Bridge on'}
       aria-label={on ? 'Turn Tuhamho Brow Bridge off' : 'Turn Tuhamho Brow Bridge on'}
-      className="relative size-[112px] shrink-0 rounded-full transition-transform duration-300 hover:scale-[1.03] focus-visible:outline-offset-4"
+      className="relative size-[92px] shrink-0 rounded-full transition-transform duration-200 hover:scale-[1.02] focus-visible:outline-offset-4 sm:size-[104px]"
     >
-      {on && <span className="breathe absolute inset-0 rounded-full bg-[radial-gradient(closest-side,color-mix(in_oklch,var(--brand)_calc(var(--glow)*0.55),transparent)_45%,transparent)]" />}
-      <span
-        className={cn('ring inset-3.5', (on || moving) && 'spin')}
-        style={{
-          background: moving
-            ? 'conic-gradient(var(--brand) 0 35%, transparent 35%)'
-            : on
-              ? 'conic-gradient(var(--brand), color-mix(in oklch, var(--brand) 55%, white), var(--brand-deep), var(--brand))'
-              : 'var(--line-strong)',
-        }}
-      />
-      <span className="absolute inset-6.5 rounded-full border border-line-strong bg-gradient-to-b from-surface-2 to-ground-2 shadow-[0_6px_10px_rgb(0_0_0/0.35)]" />
+      <span className={cn('absolute inset-2.5 rounded-full border-2', on || moving ? 'border-brand/70' : 'border-line-strong')} />
+      <span className="absolute inset-5 rounded-full border border-line bg-ground" />
       <Power
-        className={cn('absolute top-1/2 left-1/2 size-7 -translate-x-1/2 -translate-y-1/2', on ? 'text-brand' : 'text-ink-faint')}
-        strokeWidth={3}
+        className={cn('absolute top-1/2 left-1/2 size-6 -translate-x-1/2 -translate-y-1/2', on ? 'text-brand' : 'text-ink-faint')}
+        strokeWidth={2}
       />
     </button>
   );
@@ -136,15 +129,22 @@ function PowerOrb({ phase, onToggle }: { phase: DaemonPhase; onToggle: () => voi
 
 function Stat({ label, value, detail, icon: Icon, tint = 'brand' }: { label: string; value: string; detail?: string; icon: LucideIcon; tint?: Tint }) {
   return (
-    <div className="space-y-1.5 rounded-[14px] border border-line bg-surface/72 p-3.5">
+    <div className="min-w-0 space-y-1.5 rounded-[14px] border border-line bg-ground-2 p-3 sm:p-3.5">
       <div className="flex items-center gap-1.5">
-        <Icon className={cn('size-2.5', TEXT_TINT[tint])} strokeWidth={3} />
+        <Icon className={cn('size-3', TEXT_TINT[tint])} strokeWidth={1.8} />
         <span className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">{label}</span>
       </div>
       <p className="truncate font-display text-[15px] font-semibold text-ink">{value}</p>
       <p className="font-mono text-[10.5px] text-ink-dim">{detail ?? ' '}</p>
     </div>
   );
+}
+
+function welcome(t: (en: string, vi: string) => string) {
+  const hour = new Date().getHours();
+  const greeting = hour < 5 ? 'Hello' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const vi = hour < 5 ? 'Xin chào' : hour < 12 ? 'Chào buổi sáng' : hour < 18 ? 'Chào buổi chiều' : 'Chào buổi tối';
+  return t(`${greeting}, Tuhamho`, `${vi}, Tuhamho`);
 }
 
 const CODE_STEPS = 'Click Tuhamho Brow in your browser’s toolbar (the puzzle piece lists it), enter the code, and press Connect. It works once and expires in ten minutes.';
