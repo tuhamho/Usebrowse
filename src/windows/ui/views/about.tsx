@@ -1,9 +1,10 @@
 import { BookOpen, Bug, ExternalLink, LifeBuoy, Lightbulb, MonitorCog, RotateCcw, ScrollText, Star, type LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 
 import { Logo } from '@/extension/components/brand';
 import { useLanguage } from '../language';
 import { AUTHOR, LINKS, STAR_ASK, bugReportUrl, describeAgent, describeVersions, type VersionRow } from '@/lib/about';
-import { Card, CopyButton, PrimaryButton, QuietButton, SectionTitle } from '../components';
+import { Card, CopyButton, QuietButton, SectionTitle } from '../components';
 import type { Model, State } from '../model';
 
 export function versionsOf(state: State): VersionRow[] {
@@ -31,7 +32,6 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
   const { t } = useLanguage();
   const versions = versionsOf(state);
   const environment = describeVersions(versions);
-  const open = (url: string) => () => void model.openUrl(url);
 
   return (
     <div className="space-y-4.5">
@@ -41,12 +41,12 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
           <div className="min-w-0 flex-1">
             <SectionTitle title="Tuhamho Brow" subtitle={`${state.info?.version ?? ''} · ${t('your browser’s superpower · free and open source, Apache 2.0.', 'tự động hóa trình duyệt · mã nguồn mở theo Apache 2.0.')}`} />
           </div>
-          <QuietButton icon={ExternalLink} onClick={open(LINKS.site)}>
+          <ExternalButton href={LINKS.site}>
             {t('GitHub', 'GitHub')}
-          </QuietButton>
-          <QuietButton icon={ExternalLink} onClick={open(LINKS.repository)}>
+          </ExternalButton>
+          <ExternalButton href={LINKS.repository}>
             {t('Source', 'Mã nguồn')}
-          </QuietButton>
+          </ExternalButton>
         </div>
       </Card>
 
@@ -56,9 +56,9 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
             <div className="min-w-0 flex-1">
               <SectionTitle title={`${t('Made by', 'Tác giả')} ${AUTHOR}`} subtitle={t('Builds and maintains Tuhamho Brow.', 'Phát triển và duy trì Tuhamho Brow.')} />
             </div>
-            <QuietButton icon={ExternalLink} onClick={open(LINKS.author)}>
+            <ExternalButton href={LINKS.author}>
               {t('GitHub profile', 'Trang GitHub')}
-            </QuietButton>
+            </ExternalButton>
           </div>
           <div className="border-t border-line" />
           <div className="flex items-center gap-4">
@@ -66,9 +66,10 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
             <div className="min-w-0 flex-1">
             <SectionTitle title={t('Star it on GitHub', 'Ủng hộ dự án trên GitHub')} subtitle={t(STAR_ASK, 'Tuhamho Brow là phần mềm mã nguồn mở miễn phí. Hãy đánh dấu sao trên GitHub để theo dõi dự án.')} />
             </div>
-            <PrimaryButton icon={Star} onClick={open(LINKS.repository)}>
+            <a href={LINKS.repository} target="_blank" rel="noreferrer" className="glow-brand inline-flex shrink-0 items-center gap-2 rounded-full bg-brand px-4 py-2.25 text-[13px] font-semibold text-ground transition active:scale-[0.97]">
+              <Star className="size-4" />
               {t('Star', 'Đánh dấu sao')}
-            </PrimaryButton>
+            </a>
           </div>
         </div>
       </Card>
@@ -89,12 +90,12 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
           </dl>
           <div className="flex flex-wrap items-center gap-2">
             <CopyButton value={environment} />
-            <QuietButton icon={Bug} onClick={open(bugReportUrl({ environment, agent: describeAgent(state.agents) }))}>
+            <ExternalButton href={bugReportUrl({ environment, agent: describeAgent(state.agents) })} icon={Bug}>
               {t('Report a bug', 'Báo lỗi')}
-            </QuietButton>
-            <QuietButton icon={Lightbulb} onClick={open(LINKS.feature)}>
+            </ExternalButton>
+            <ExternalButton href={LINKS.feature} icon={Lightbulb}>
               {t('Suggest a feature', 'Đề xuất tính năng')}
-            </QuietButton>
+            </ExternalButton>
           </div>
         </div>
       </Card>
@@ -103,10 +104,10 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
         <div className="px-5 pt-5 pb-2">
           <SectionTitle title={t('Help', 'Trợ giúp')} />
         </div>
-        <HelpRow icon={BookOpen} title={t('Guide', 'Hướng dẫn')} detail={t('Installing, pairing, the agents, and every feature step by step.', 'Hướng dẫn cài đặt, ghép nối, agent và các tính năng.')} onClick={open(LINKS.guide)} />
-        <HelpRow icon={MonitorCog} title={t('This app', 'Ứng dụng này')} detail={t('Every tab of this window, the tray, updates and uninstalling.', 'Các mục, khay hệ thống, cập nhật và gỡ cài đặt.')} onClick={open(LINKS.windowsApp)} />
-        <HelpRow icon={LifeBuoy} title={t('Troubleshooting', 'Khắc phục sự cố')} detail={t('Symptom, cause and fix for setup, pairing, agents and pages.', 'Cách xử lý lỗi cài đặt, ghép nối, agent và trang web.')} onClick={open(LINKS.troubleshooting)} />
-        <HelpRow icon={ScrollText} title={t('Release notes', 'Ghi chú phiên bản')} detail={t('What changed in each version.', 'Các thay đổi trong từng phiên bản.')} onClick={open(LINKS.changelog)} />
+        <HelpRow icon={BookOpen} title={t('Guide', 'Hướng dẫn')} detail={t('Installing, pairing, the agents, and every feature step by step.', 'Hướng dẫn cài đặt, ghép nối, agent và các tính năng.')} href={LINKS.guide} />
+        <HelpRow icon={MonitorCog} title={t('This app', 'Ứng dụng này')} detail={t('Every tab of this window, the tray, updates and uninstalling.', 'Các mục, khay hệ thống, cập nhật và gỡ cài đặt.')} href={LINKS.windowsApp} />
+        <HelpRow icon={LifeBuoy} title={t('Troubleshooting', 'Khắc phục sự cố')} detail={t('Symptom, cause and fix for setup, pairing, agents and pages.', 'Cách xử lý lỗi cài đặt, ghép nối, agent và trang web.')} href={LINKS.troubleshooting} />
+        <HelpRow icon={ScrollText} title={t('Release notes', 'Ghi chú phiên bản')} detail={t('What changed in each version.', 'Các thay đổi trong từng phiên bản.')} href={LINKS.changelog} />
         <div className="border-t border-line px-5 py-3.5">
           <QuietButton icon={RotateCcw} onClick={() => model.showPreflight()}>
             {t('Run the checks again', 'Kiểm tra lại')}
@@ -117,15 +118,24 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
   );
 }
 
-function HelpRow({ icon: Icon, title, detail, onClick }: { icon: LucideIcon; title: string; detail: string; onClick: () => void }) {
+function ExternalButton({ href, icon: Icon = ExternalLink, children }: { href: string; icon?: LucideIcon; children: ReactNode }) {
   return (
-    <button type="button" onClick={onClick} className="group flex w-full items-center gap-3.5 border-t border-line px-5 py-3 text-left transition-colors hover:bg-surface-2/60">
+    <a href={href} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface-2/70 px-3 py-1.75 text-xs font-medium text-ink transition hover:bg-surface-2">
+      <Icon className="size-3.5" />
+      {children}
+    </a>
+  );
+}
+
+function HelpRow({ icon: Icon, title, detail, href }: { icon: LucideIcon; title: string; detail: string; href: string }) {
+  return (
+    <a href={href} target="_blank" rel="noreferrer" className="group flex w-full items-center gap-3.5 border-t border-line px-5 py-3 text-left transition-colors hover:bg-surface-2/60">
       <Icon className="size-4 shrink-0 text-brand" />
       <span className="min-w-0 flex-1">
         <span className="block text-[13px] font-medium text-ink">{title}</span>
         <span className="mt-0.5 block text-xs text-ink-dim">{detail}</span>
       </span>
       <ExternalLink className="size-3.5 shrink-0 text-ink-faint transition-colors group-hover:text-ink-dim" />
-    </button>
+    </a>
   );
 }
