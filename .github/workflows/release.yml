@@ -200,6 +200,7 @@ jobs:
         run: |
           gh release create "$TAG" \
             --title "$TAG" \
+            --draft \
             --verify-tag \
             --notes-file "dist/RELEASE_NOTES-$TAG.md" \
             "dist/browsentic-$VERSION-chrome.zip" \
@@ -406,6 +407,20 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --pattern 'Tuhamho-Brow-*-setup.exe.sig' --dir signatures
           node scripts/windows-latest-json.ts "${GITHUB_REF_NAME#v}" signatures > latest.json
           gh release upload "$GITHUB_REF_NAME" latest.json --clobber
+
+  # Keep the newest published release's updater endpoint valid. GitHub's `/releases/latest`
+  # skips drafts, so installed apps continue reading the previous complete feed while this
+  # version's installers are building. Publish only after latest.json is attached.
+  publish-release:
+    needs: [release, windows-feed]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release after the Windows update feed is ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_id=$(gh release view "$GITHUB_REF_NAME" --json databaseId -q .databaseId)
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false
 
   # ---------------------------------------------------------------------------------------
   # The Firefox add-on release Firefox will actually install: the firefox zip, signed by
