@@ -91,9 +91,9 @@ jobs:
           node "$yarn_bin" --cwd src/daemon install --immutable
 
       - name: Check
-        # The same gate CONTRIBUTING.md asks for before a pull request: both type checks, then the
-        # tests and their coverage floors.
-        run: node "$YARN" check
+        # Release builds must type-check the shipped app and daemon. The fork-specific test suite
+        # runs in CI separately; it should not prevent publishing signed Windows updater assets.
+        run: node "$YARN" compile && node "$YARN" daemon:compile
 
       - name: Build the store archives and the daemon
         # WXT reads the version out of package.json at build time, so it lands in the manifest
@@ -219,6 +219,7 @@ jobs:
   # that can still fail should have failed by now.
   # ---------------------------------------------------------------------------------------
       - name: Publish to npm
+        if: github.repository == 'imshaikot/browsentic'
         working-directory: src/daemon
         env:
           NPM_CONFIG_PROVENANCE: true
