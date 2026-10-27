@@ -305,8 +305,8 @@ jobs:
   # its own for the same reason as the Mac app: a failure here leaves a release without an
   # installer, never an installer without a release.
   #
-  # The updater's key comes from two repository secrets, TAURI_SIGNING_PRIVATE_KEY and
-  # TAURI_SIGNING_PRIVATE_KEY_PASSWORD; its public half is in tauri.conf.json, and a release built
+  # The updater's key comes from two repository secrets, TUHAMHO_SIGNING_PRIVATE_KEY and
+  # TUHAMHO_SIGNING_PRIVATE_KEY_PASSWORD; its public half is in tauri.conf.json, and a release built
   # without it could never update itself, so the job fails instead. Authenticode waits on Azure
   # Trusted Signing: until AZURE_* secrets exist the installer is unsigned, SmartScreen warns on a
   # downloaded copy, and the one-line PowerShell install, which leaves no download mark, does not.
@@ -353,8 +353,8 @@ jobs:
 
       - name: Build and sign the installer
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TUHAMHO_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TUHAMHO_SIGNING_PRIVATE_KEY_PASSWORD }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -363,7 +363,7 @@ jobs:
           AZURE_CERT_PROFILE_NAME: ${{ secrets.AZURE_CERT_PROFILE_NAME }}
         run: |
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::error::no TAURI_SIGNING_PRIVATE_KEY secret: an installer the updater cannot verify would strand every copy on this version"
+            echo "::error::no TUHAMHO_SIGNING_PRIVATE_KEY secret: an installer the updater cannot verify would strand every copy on this version"
             exit 1
           fi
           authenticode=()
