@@ -10,7 +10,7 @@ import { useAutoPair } from '@/lib/bridge/use-auto-pair';
 import { useDaemonState } from '@/lib/bridge/use-daemon-state';
 
 const MODE_LINE: Record<PairingMode, string> = {
-  auto: 'Browsers with Browsentic connect to this computer by themselves.',
+  auto: 'Browsers with Tuhamho Brow connect to this computer by themselves.',
   ask: 'This computer asks you to allow each new browser.',
   code: 'Browsers connect to this computer only with a code.',
 };
@@ -41,8 +41,8 @@ export function DaemonLink() {
         <>
           <p className="text-[11px] leading-relaxed text-ink-dim">
             {connected
-              ? 'Browsentic Bridge is driving this browser. Disconnecting stops it until you connect again here.'
-              : 'Paired, but Browsentic Bridge is not answering. Start it with browsentic start, or disconnect.'}
+              ? 'Tuhamho Brow Bridge is driving this browser. Disconnecting stops it until you connect again here.'
+              : 'Paired, but Tuhamho Brow Bridge is not answering. Start it with browsentic start, or disconnect.'}
           </p>
           {connected && mode && (
             <p className="text-[11px] leading-relaxed text-ink-faint">

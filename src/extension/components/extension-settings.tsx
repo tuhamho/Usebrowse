@@ -37,10 +37,10 @@ function NewTab() {
       note="With Home off, a new tab shows Chrome’s own new tab page. Edge, Brave and Firefox keep theirs out of an extension’s reach, so they get a plain page of your frequent sites instead."
     >
       <Row
-        title="Open Browsentic Home on new tabs"
+        title="Open Tuhamho Brow Home on new tabs"
         note="A composer, your frequent sites and your recent conversations. Sending from it opens the side panel, which keeps the conversation when the agent takes the tab to a site."
       >
-        <Switch checked={choice.home} label="Open Browsentic Home on new tabs" onChange={(home) => setChoice({ ...choice, home })} />
+        <Switch checked={choice.home} label="Open Tuhamho Brow Home on new tabs" onChange={(home) => setChoice({ ...choice, home })} />
       </Row>
       <Row
         title="Show frequent sites"
@@ -81,23 +81,23 @@ function ContextMenuItems({ handsFree }: { handsFree: boolean }) {
   return (
     <SettingsGroup
       title="Right-click menu"
-      note="What a right-click anywhere on a page offers. With more than one item on, the browser gathers them under Browsentic."
+      note="What a right-click anywhere on a page offers. With more than one item on, the browser gathers them under Tuhamho Brow."
     >
-      <Row title="Open Browsentic" note="Opens the side panel, or closes it while it is open.">
+      <Row title="Open Tuhamho Brow" note="Opens the side panel, or closes it while it is open.">
         <Switch
           checked={choice.panel}
-          label="Show Open Browsentic in the right-click menu"
+          label="Show Open Tuhamho Brow in the right-click menu"
           onChange={(panel) => setChoice({ ...choice, panel })}
         />
       </Row>
       {handsFree && (
         <Row
-          title="Open Browsentic (Hands Free)"
+          title="Open Tuhamho Brow (Hands Free)"
           note="Puts the mic on the page instead of the panel, or takes it away while it is there."
         >
           <Switch
             checked={choice.handsFree}
-            label="Show Open Browsentic (Hands Free) in the right-click menu"
+            label="Show Open Tuhamho Brow (Hands Free) in the right-click menu"
             onChange={(on) => setChoice({ ...choice, handsFree: on })}
           />
         </Row>
@@ -111,7 +111,7 @@ function KeyboardShortcuts({ handsFree }: { handsFree: boolean }) {
   return (
     <SettingsGroup
       title="Keyboard shortcuts"
-      note="The browser keeps these keys, not Browsentic: it hands out the suggested ones unless something else already has them, and changes them on its own shortcuts page."
+      note="The browser keeps these keys, not Tuhamho Brow: it hands out the suggested ones unless something else already has them, and changes them on its own shortcuts page."
     >
       {shortcuts === undefined ? (
         <Row title="Reading the shortcuts…" />

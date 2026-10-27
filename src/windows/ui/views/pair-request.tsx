@@ -24,8 +24,8 @@ function PairRequestDialog({ request, behind, model, busy }: { request: PairRequ
 
   return (
     <ConfirmDialog
-      title={`${browserName(request)} wants to connect to Browsentic Bridge`}
-      message={`Allow it to use your agent and drive this browser? If you didn’t just install or open Browsentic in ${there}, don’t allow it.`}
+      title={`${browserName(request)} wants to connect to Tuhamho Brow Bridge`}
+      message={`Allow it to use your agent and drive this browser? If you didn’t just install or open Tuhamho Brow in ${there}, don’t allow it.`}
       action="Allow"
       cancel="Deny"
       tint="brand"

@@ -15,7 +15,7 @@ const COPY: Record<Phase, { title: string; body: string }> = {
   },
   granted: {
     title: 'The microphone is on',
-    body: 'This tab closes itself. Go back to Browsentic and talk.',
+    body: 'This tab closes itself. Go back to Tuhamho Brow and talk.',
   },
   refused: {
     title: 'The microphone is blocked',

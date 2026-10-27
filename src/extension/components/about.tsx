@@ -17,19 +17,19 @@ export function About() {
       <div className="panel-card flex flex-wrap items-center gap-4 rounded-xl p-5">
         <Logo className="size-11 shrink-0 text-brand" />
         <div className="min-w-48 flex-1">
-          <p className="font-display text-lg font-semibold tracking-tight text-ink">Browsentic</p>
+          <p className="font-display text-lg font-semibold tracking-tight text-ink">Tuhamho Brow</p>
           <p className="text-xs text-ink-faint">
             v{browser.runtime.getManifest().version} · your browser’s superpower · free and open source, Apache 2.0
           </p>
         </div>
         <div className="flex gap-2">
-          <ExternalButton href={LINKS.site}>browsentic.com</ExternalButton>
+          <ExternalButton href={LINKS.site}>Usebrowse on GitHub</ExternalButton>
           <ExternalButton href={LINKS.repository}>Source</ExternalButton>
         </div>
       </div>
 
       <SettingsGroup title="Made by">
-        <Row title={AUTHOR} note="Builds and maintains Browsentic.">
+        <Row title={AUTHOR} note="Builds and maintains Tuhamho Brow.">
           <ExternalButton href={LINKS.author}>GitHub profile</ExternalButton>
         </Row>
         <Row title="Star it on GitHub" note={STAR_ASK}>

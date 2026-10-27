@@ -11,7 +11,7 @@ export function UpdatePill({ version, onUpdate, onLater }: { version: string; on
     <div className="enters mb-2 flex h-8 items-center overflow-hidden rounded-full border border-brand/45 bg-brand/10">
       <p className="flex min-w-0 flex-1 items-center gap-2 pl-3 text-xs text-ink">
         <RefreshCw className="size-3.5 shrink-0 text-brand" />
-        <span className="truncate">Browsentic v{version} is ready</span>
+        <span className="truncate">Tuhamho Brow v{version} is ready</span>
       </p>
       <button
         type="button"

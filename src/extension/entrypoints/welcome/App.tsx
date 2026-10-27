@@ -11,7 +11,7 @@ import { useAutoPair } from '@/lib/bridge/use-auto-pair';
 import { useDaemonState } from '@/lib/bridge/use-daemon-state';
 import { cn } from '@/lib/utils';
 
-/** Opened once, when the extension is installed: it finds Browsentic Bridge, or says how to get it, and connects by itself. */
+/** Opened once, when the extension is installed: it finds Tuhamho Brow Bridge, or says how to get it, and connects by itself. */
 export default function App() {
   const daemon = useDaemonState();
   const { connect } = useAutoPair(daemon);
@@ -32,14 +32,14 @@ export default function App() {
             <h1 className="text-xl font-semibold">tuhamho-brow is in your browser</h1>
             <p className="text-sm leading-relaxed text-ink-dim">
               Your browser’s superpower: free, open source, and no API key, subscription or account. It runs on the agent
-              CLI you already use, through Browsentic Bridge on this computer.
+              CLI you already use, through Tuhamho Brow Bridge on this computer.
             </p>
           </div>
         </header>
 
         <ol className="space-y-3">
           <Step done title="The extension, in this browser">Added.</Step>
-          <Step done={connected} title="Browsentic Bridge, on this computer">
+          <Step done={connected} title="Tuhamho Brow Bridge, on this computer">
             {connected ? 'Connected. Everything stays on this computer.' : <PairingStatus daemon={daemon} onConnect={connect} />}
           </Step>
           <Step done={connected && !!daemon?.agent} title="An agent CLI you’re signed in to">

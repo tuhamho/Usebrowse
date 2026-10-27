@@ -176,7 +176,7 @@ export interface Backend {
   onControlEvent(listener: (event: string) => void): () => void;
   onTray(listener: (action: string) => void): () => void;
   onPairLink(listener: (act: PairLinkAct) => void): () => void;
-  /** Browsentic Bridge started a second copy because a browser asked to pair and this window was not watching. */
+  /** Tuhamho Brow Bridge started a second copy because a browser asked to pair and this window was not watching. */
   onPairingLaunch(listener: () => void): () => void;
   /** Someone clicked a notice's toast, and the Rust side matched the nonce it minted for it. */
   onNoticeLink(listener: (notice: string) => void): () => void;

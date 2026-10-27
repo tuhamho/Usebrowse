@@ -17,7 +17,7 @@ const PAIRED_BY: Record<PairedBy, string> = { auto: 'Paired by itself', approved
 const NONE_PAIRED: Record<PairingMode, string> = {
   auto: 'Add the extension from the Overview tab, and it connects by itself.',
   ask: 'Add the extension from the Overview tab, then allow it here when it asks to connect.',
-  code: 'Add the extension from the Overview tab, or get a code above and enter it in the Browsentic side panel.',
+  code: 'Add the extension from the Overview tab, or get a code above and enter it in the Tuhamho Brow side panel.',
 };
 
 type Asking = { kind: 'unpair' | 'rename'; session: SessionSummary } | { kind: 'unpair-all' };

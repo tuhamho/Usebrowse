@@ -290,7 +290,7 @@ export class Model {
     this.set({ preflightBusy: false });
     if (this.finishingUpdate()) {
       await this.setUpEverything();
-      if (this.state.phase === 'main') this.say(`Browsentic ${this.state.info?.version} is installed.`);
+      if (this.state.phase === 'main') this.say(`Tuhamho Brow ${this.state.info?.version} is installed.`);
       return;
     }
     if (this.canEnter && !CHECKS.some((id) => needsAttention(this.state.checks[id]))) {
@@ -311,7 +311,7 @@ export class Model {
           const node = await this.backend.locateNode();
           this.set({ node });
           if (!node) {
-            return { kind: 'missing', text: `Version ${MINIMUM_NODE} or newer runs Browsentic Bridge. A private copy goes in ${this.short(`${this.state.info?.paths.state}${this.sep}runtime`)}.` };
+            return { kind: 'missing', text: `Version ${MINIMUM_NODE} or newer runs Tuhamho Brow Bridge. A private copy goes in ${this.short(`${this.state.info?.paths.state}${this.sep}runtime`)}.` };
           }
           return { kind: 'passed', text: `${node.version} · ${node.isPrivate ? 'private copy' : this.short(node.path)}` };
         }
@@ -320,7 +320,7 @@ export class Model {
           this.set({ info });
           const { bundled, installed, current } = info.payload;
           const cli = this.short(`${info.paths.state}${this.sep}cli`);
-          if (!bundled) return { kind: 'failed', text: 'This copy of Browsentic carries no CLI payload. Download a fresh one from browsentic.com.' };
+          if (!bundled) return { kind: 'failed', text: 'This copy of Tuhamho Brow carries no CLI payload. Download a fresh one from github.com/tuhamho/Usebrowse.' };
           if (current) return { kind: 'passed', text: `v${bundled} in ${cli}` };
           if (installed && installed !== bundled) return { kind: 'missing', text: `v${installed} is installed; this app carries v${bundled}.` };
           return { kind: 'missing', text: `Installs the command and what runs in the background into ${cli}.` };
@@ -378,12 +378,12 @@ export class Model {
         }
         case 'command': {
           this.requireNode();
-          this.check(id, { kind: 'working', text: `Copying Browsentic Bridge into ${this.short(`${this.state.info?.paths.state}${this.sep}cli`)}` });
+          this.check(id, { kind: 'working', text: `Copying Tuhamho Brow Bridge into ${this.short(`${this.state.info?.paths.state}${this.sep}cli`)}` });
           const wasRunning = !!(await this.backend.readLock()) && !!this.state.info?.payload.installed;
           if (wasRunning) await this.backend.cli(['stop']);
           await this.backend.installPayload();
           if (wasRunning) {
-            this.check(id, { kind: 'working', text: 'Restarting Browsentic Bridge on the new build' });
+            this.check(id, { kind: 'working', text: 'Restarting Tuhamho Brow Bridge on the new build' });
             await this.run(['start']);
           }
           // Registers it with every browser, store copies included, so a browser can start it.
@@ -603,7 +603,7 @@ export class Model {
 
   setPairingMode(mode: PairingMode) {
     return this.perform('pairing', async () => {
-      const reply = accepted(await this.control({ op: 'pairing', set: mode }), 'Browsentic Bridge kept the pairing setting as it was.');
+      const reply = accepted(await this.control({ op: 'pairing', set: mode }), 'Tuhamho Brow Bridge kept the pairing setting as it was.');
       if (isPairingMode(reply.mode)) this.set({ pairingMode: reply.mode });
     });
   }
@@ -612,9 +612,9 @@ export class Model {
   decide(request: PairRequestSummary, allow: boolean, label?: string) {
     const named = label?.trim() || undefined;
     return this.perform(`decide:${request.id}`, async () => {
-      accepted(await this.control({ op: 'decide', request: request.id, allow, ...(allow && named ? { label: named } : {}) }), 'Browsentic Bridge could not settle that request.');
+      accepted(await this.control({ op: 'decide', request: request.id, allow, ...(allow && named ? { label: named } : {}) }), 'Tuhamho Brow Bridge could not settle that request.');
       const name = (allow && named) || browserName(request);
-      this.say(allow ? `${name} can connect to Browsentic Bridge now.` : `${name} is kept out. Reconnect it from Browsers if you change your mind.`);
+      this.say(allow ? `${name} can connect to Tuhamho Brow Bridge now.` : `${name} is kept out. Reconnect it from Browsers if you change your mind.`);
       this.showPairRequests(this.state.pairRequests.filter((held) => held.id !== request.id));
       await Promise.all([this.loadPairRequests(), this.loadBlocked()]);
     });
@@ -622,7 +622,7 @@ export class Model {
 
   reconnect(browser: BlockedBrowser) {
     return this.perform(`reconnect:${browser.installId}`, async () => {
-      accepted(await this.control({ op: 'decide', request: browser.installId, allow: true }), 'Browsentic Bridge could not let that browser back in.');
+      accepted(await this.control({ op: 'decide', request: browser.installId, allow: true }), 'Tuhamho Brow Bridge could not let that browser back in.');
       this.say(`${browser.browser ?? 'That browser'} can connect again.`);
       await this.loadBlocked();
     });
@@ -630,7 +630,7 @@ export class Model {
 
   rename(session: SessionSummary, label: string) {
     return this.perform(`label:${session.id}`, async () => {
-      accepted(await this.control({ op: 'label', session: session.id, label: label.trim() }), 'Browsentic Bridge could not rename that browser.');
+      accepted(await this.control({ op: 'label', session: session.id, label: label.trim() }), 'Tuhamho Brow Bridge could not rename that browser.');
       await this.refresh();
     });
   }
@@ -648,7 +648,7 @@ export class Model {
     const fresh = this.noticesSaid === undefined;
     this.noticesSaid = allowed;
     try {
-      accepted(await this.control({ op: 'notices', watch: true, allowed }), 'Browsentic Bridge would not hand this app its notices.');
+      accepted(await this.control({ op: 'notices', watch: true, allowed }), 'Tuhamho Brow Bridge would not hand this app its notices.');
       if (fresh && allowed) await this.takeNotices();
     } catch {
       this.noticesSaid = undefined;
@@ -677,7 +677,7 @@ export class Model {
     if (!seen) return;
     for (const session of sessions.filter((candidate) => candidate.pairedBy === 'auto' && !seen.has(keyOf(candidate)))) {
       const name = sessionName(session);
-      this.say(`${name} connected to Browsentic Bridge by itself.`);
+      this.say(`${name} connected to Tuhamho Brow Bridge by itself.`);
       void this.backend.announcePaired(session.id, name).catch(() => undefined);
     }
   }
@@ -916,9 +916,9 @@ export class Model {
     try {
       const found = await this.backend.checkUpdate();
       if (found && found.version !== this.state.update?.version) {
-        this.say(`Browsentic ${found.version} is out. You have ${this.state.info?.version}. Update from the Overview tab.`);
+        this.say(`Tuhamho Brow ${found.version} is out. You have ${this.state.info?.version}. Update from the Overview tab.`);
       } else if (announce && !found) {
-        this.say(`Browsentic ${this.state.info?.version} is the latest.`);
+        this.say(`Tuhamho Brow ${this.state.info?.version} is the latest.`);
       }
       this.set({ update: found ?? undefined, lastUpdateCheck: Date.now() });
     } catch (error) {
@@ -967,7 +967,7 @@ export class Model {
 
   private async control(frame: Record<string, unknown>, timeoutMs?: number) {
     const reply = await this.backend.controlRequest(frame, timeoutMs);
-    if (typeof reply.error === 'object' && reply.error) throw new Error(String((reply.error as { message?: unknown }).message ?? 'Browsentic Bridge refused that.'));
+    if (typeof reply.error === 'object' && reply.error) throw new Error(String((reply.error as { message?: unknown }).message ?? 'Tuhamho Brow Bridge refused that.'));
     return reply;
   }
 
@@ -1018,7 +1018,7 @@ export class Model {
     const link = status ? ` · extension ${status.connected ? 'connected' : 'not connected'}` : '';
     await this.backend
       .trayStatus({
-        summary: `Browsentic Bridge: ${label}${status ? ` · 127.0.0.1:${status.port}` : ''}${link}`,
+        summary: `Tuhamho Brow Bridge: ${label}${status ? ` · 127.0.0.1:${status.port}` : ''}${link}`,
         toggle: daemon === 'on' ? 'Turn Off' : 'Turn On',
         canToggle: phase === 'main' && (daemon === 'on' || daemon === 'off'),
         canRestart: daemon === 'on',
@@ -1071,7 +1071,7 @@ const linkOf = (sessions: SessionSummary[]) => sessions.map((session) => `${sess
 export function outcome<T>(result: unknown): T {
   const answer = result as { ok?: boolean; data?: T; error?: { message?: string } } | undefined;
   if (answer?.ok && answer.data !== undefined) return answer.data;
-  throw new Error(answer?.error?.message ?? 'Browsentic Bridge answered with something this app cannot read. Update the app.');
+  throw new Error(answer?.error?.message ?? 'Tuhamho Brow Bridge answered with something this app cannot read. Update the app.');
 }
 
 export function messageOf(error: unknown): string {

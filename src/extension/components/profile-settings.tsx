@@ -148,7 +148,7 @@ export function ProfileSettings() {
 
       <Group
         title="Instructions"
-        note="Rules the agent keeps on every task, as firmly as its own. They cannot switch off Browsentic’s guardrails or skip an approval."
+        note="Rules the agent keeps on every task, as firmly as its own. They cannot switch off Tuhamho Brow’s guardrails or skip an approval."
       >
         <div className="space-y-1.5 p-4">
           <Textarea
@@ -169,7 +169,7 @@ export function ProfileSettings() {
       <p className="text-xs leading-relaxed text-ink-faint">
         Everything filled in here goes to the agent’s model with every side-panel run and scheduled task, so it uses these exact
         values instead of guessing. It is kept on this computer, in <span className="font-mono text-ink-dim">profile.json</span>{' '}
-        beside the daemon’s config. Leave out passwords and card numbers — Browsentic seals those in the browser and never hands
+        beside the daemon’s config. Leave out passwords and card numbers — Tuhamho Brow seals those in the browser and never hands
         them to a model.
       </p>
 

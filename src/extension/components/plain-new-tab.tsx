@@ -3,7 +3,7 @@ import { useNewTabChoice } from '@/lib/bridge/use-extension-settings';
 import { useFrequentSites } from '@/lib/bridge/use-frequent-sites';
 import { hideSite } from '@/lib/settings/new-tab';
 
-/** A new tab with Browsentic Home switched off, in a browser whose own new tab page an extension cannot open. */
+/** A new tab with Tuhamho Brow Home switched off, in a browser whose own new tab page an extension cannot open. */
 export function PlainNewTab({ onTurnOn }: { onTurnOn: () => void }) {
   const [choice, setChoice] = useNewTabChoice();
   const frequent = useFrequentSites(choice.sites, choice.hidden);
@@ -21,7 +21,7 @@ export function PlainNewTab({ onTurnOn }: { onTurnOn: () => void }) {
         }}
         className="fixed right-4 bottom-4 text-[11px] text-ink-faint transition-colors hover:text-ink-dim"
       >
-        Turn Browsentic Home on
+        Turn Tuhamho Brow Home on
       </button>
     </main>
   );

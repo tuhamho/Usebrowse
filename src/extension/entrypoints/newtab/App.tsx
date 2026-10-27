@@ -41,8 +41,8 @@ type Sheet = 'connection' | 'agent' | 'customize';
 const RECENT = 4;
 
 const SETUP: Record<StatusBlocker, { text: string; action: string; sheet: Sheet }> = {
-  unpaired: { text: 'This browser isn’t connected to Browsentic Bridge yet.', action: 'Set up the link', sheet: 'connection' },
-  offline: { text: 'Browsentic Bridge isn’t answering. Start it and this reconnects on its own.', action: 'Check the link', sheet: 'connection' },
+  unpaired: { text: 'This browser isn’t connected to Tuhamho Brow Bridge yet.', action: 'Set up the link', sheet: 'connection' },
+  offline: { text: 'Tuhamho Brow Bridge isn’t answering. Start it and this reconnects on its own.', action: 'Check the link', sheet: 'connection' },
   agent: { text: 'The chosen agent can’t run on this computer.', action: 'Choose another agent', sheet: 'agent' },
 };
 

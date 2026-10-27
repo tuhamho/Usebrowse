@@ -6,7 +6,7 @@
 @custom-variant dark (&:not([data-theme='daylight'] *));
 
 /*
- * Browsentic — the landing page’s palette, at panel scale.
+ * Tuhamho Brow — a midnight blue palette with electric blue accents.
  * A theme is one block of raw tokens: four grounds, three inks, two lines, six
  * named colours, and the four dials (wash, grain, neon, glow) the utilities read.
  * Nothing below this section names a colour, so a theme is that block and no more.
@@ -19,31 +19,31 @@
   --radius: 0.75rem;
 }
 
-/* Warm near-black under a cyan brand — the look Browsentic ships. */
+/* Midnight blue-black with vivid blue accents. */
 [data-theme='ember'] {
   color-scheme: dark;
 
-  --ground: oklch(0.152 0.016 52);
-  --ground-2: oklch(0.183 0.018 50);
-  --surface: oklch(0.213 0.019 48);
-  --surface-2: oklch(0.253 0.021 46);
+  --ground: oklch(0.132 0.026 258);
+  --ground-2: oklch(0.166 0.031 258);
+  --surface: oklch(0.202 0.034 257);
+  --surface-2: oklch(0.244 0.04 256);
 
-  --ink: oklch(0.958 0.012 70);
-  --ink-dim: oklch(0.735 0.018 60);
-  --ink-faint: oklch(0.575 0.02 55);
+  --ink: oklch(0.963 0.012 255);
+  --ink-dim: oklch(0.735 0.024 255);
+  --ink-faint: oklch(0.575 0.03 255);
 
-  --line: oklch(0.98 0.01 60 / 10%);
-  --line-strong: oklch(0.98 0.01 60 / 18%);
+  --line: oklch(0.92 0.03 255 / 11%);
+  --line-strong: oklch(0.92 0.03 255 / 20%);
 
-  --brand: oklch(0.83 0.13 195);
-  --brand-deep: oklch(0.62 0.12 200);
-  --ember: oklch(0.735 0.168 42);
-  --magenta: oklch(0.7 0.21 335);
+  --brand: oklch(0.76 0.16 244);
+  --brand-deep: oklch(0.58 0.17 247);
+  --ember: oklch(0.68 0.13 218);
+  --magenta: oklch(0.7 0.15 270);
   --lime: oklch(0.84 0.18 150);
   --amber: oklch(0.84 0.15 85);
   --danger: oklch(0.645 0.205 25);
 
-  --wash: oklch(0.98 0.01 60);
+  --wash: oklch(0.96 0.02 255);
   --grain: 0.03;
   --neon: 55%;
   --glow: 72%;

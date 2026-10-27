@@ -14,8 +14,8 @@ import { useMirror, type Mirror } from './use-mirror';
 const ENDED: Record<PhoneEndReason, string> = {
   unplugged: 'The phone was disconnected.',
   'chrome-exited': 'Chrome closed on the phone.',
-  'bridge-stopping': 'Browsentic Bridge stopped.',
-  'bridge-gone': 'The link to Browsentic Bridge went down.',
+  'bridge-stopping': 'Tuhamho Brow Bridge stopped.',
+  'bridge-gone': 'The link to Tuhamho Brow Bridge went down.',
   closed: 'Android was switched off.',
 };
 
@@ -66,7 +66,7 @@ export default function App() {
   const tooOld = !!daemon?.connected && (daemon.protocolVersion ?? 0) < ANDROID_PROTOCOL;
 
   useEffect(() => {
-    document.title = `Android · ${session?.model ?? 'Browsentic'}`;
+    document.title = `Android · ${session?.model ?? 'Tuhamho Brow'}`;
   }, [session?.model]);
 
   const wasAsleep = useRef(asleep);
@@ -77,9 +77,9 @@ export default function App() {
   }, [asleep, live, send]);
 
   const overlay = tooOld ? (
-    <Notice icon={<Unplug className="size-6" />} title="Update Browsentic Bridge" body="This Bridge predates Android. Run “browsentic update”, then switch Android on again." />
+    <Notice icon={<Unplug className="size-6" />} title="Update Tuhamho Brow Bridge" body="This Bridge predates Android. Run “browsentic update”, then switch Android on again." />
   ) : !session ? (
-    <Notice icon={<Smartphone className="size-6" />} title="Android is off" body="Switch on Android in the Browsentic side panel to show your phone here." />
+    <Notice icon={<Smartphone className="size-6" />} title="Android is off" body="Switch on Android in the Tuhamho Brow side panel to show your phone here." />
   ) : session.ended ? (
     <Ended session={session} />
   ) : session.waitingForChrome ? (
@@ -273,7 +273,7 @@ function WaitingForChrome({ session }: { session: PhoneSession }) {
     if (!result.ok) setError(result.error.message);
   };
   return (
-    <Notice icon={<Smartphone className="size-6" />} title="Open Chrome on your phone" body={`Browsentic needs Chrome running on ${session.model ?? 'your phone'} to show and drive it.`}>
+    <Notice icon={<Smartphone className="size-6" />} title="Open Chrome on your phone" body={`Tuhamho Brow needs Chrome running on ${session.model ?? 'your phone'} to show and drive it.`}>
       <Button size="sm" disabled={busy} onClick={() => void open()}>
         {busy && <Loader2 className="size-3.5 animate-spin" />}
         Open Chrome on the phone

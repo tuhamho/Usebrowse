@@ -338,7 +338,7 @@ export default function App() {
           variant="ghost"
           size="icon-sm"
           title="Settings"
-          aria-label="Open Browsentic settings in a tab"
+          aria-label="Open Tuhamho Brow settings in a tab"
           onClick={() => void browser.runtime.openOptionsPage()}
         >
           <SlidersHorizontal className="size-3.5" />

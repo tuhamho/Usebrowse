@@ -49,7 +49,7 @@ export function GuardrailPolicy({
 
       {error && <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>}
 
-      <Group title="Rules" note="Each row starts on the default Browsentic ships. Switch one on to choose Allow, Ask or Block for it.">
+      <Group title="Rules" note="Each row starts on the default Tuhamho Brow ships. Switch one on to choose Allow, Ask or Block for it.">
         {editable.map((rule) => (
           <RuleRow key={rule.id} rule={rule} busy={busy === rule.id} onWrite={write} />
         ))}

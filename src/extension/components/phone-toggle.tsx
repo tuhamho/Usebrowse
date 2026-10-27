@@ -17,8 +17,8 @@ export const drivablePhone = (android: AndroidState | undefined) => android?.dev
 
 function whyNoPhone(daemon: DaemonState | null, android: AndroidState | undefined): string {
   if (import.meta.env.FIREFOX) return 'Android phones are driven from Chrome and other Chromium browsers, not Firefox.';
-  if (!daemon?.connected) return 'Connect to Browsentic Bridge first, then switch to the phone.';
-  if (!android) return 'This Browsentic Bridge is too old to drive a phone. Update it, then try again.';
+  if (!daemon?.connected) return 'Connect to Tuhamho Brow Bridge first, then switch to the phone.';
+  if (!android) return 'This Tuhamho Brow Bridge is too old to drive a phone. Update it, then try again.';
   return android.devices[0]?.problem?.message ?? android.problem?.message ?? 'The phone is not ready.';
 }
 

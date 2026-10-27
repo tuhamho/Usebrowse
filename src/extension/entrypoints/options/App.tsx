@@ -44,7 +44,7 @@ const SECTIONS: { id: SectionId; label: string; icon: LucideIcon; blurb: string;
     id: 'blocked',
     label: 'Blocked sites',
     icon: Ban,
-    blurb: 'Sites Browsentic will never read or act on — no agent, schedule or saved tool can override it. Kept in this browser only; the daemon, the agent and the desktop app cannot see or change it.',
+    blurb: 'Sites Tuhamho Brow will never read or act on — no agent, schedule or saved tool can override it. Kept in this browser only; the daemon, the agent and the desktop app cannot see or change it.',
     View: BlockedSitesSettings,
   },
   {
@@ -58,14 +58,14 @@ const SECTIONS: { id: SectionId; label: string; icon: LucideIcon; blurb: string;
     id: 'connection',
     label: 'Connection',
     icon: Link2,
-    blurb: 'The link between this browser and the Browsentic daemon on this computer.',
+    blurb: 'The link between this browser and the Tuhamho Brow daemon on this computer.',
     View: Connection,
   },
   {
     id: 'about',
     label: 'About',
     icon: Info,
-    blurb: 'Who makes Browsentic, where to get help, and exactly what this browser is running.',
+    blurb: 'Who makes Tuhamho Brow, where to get help, and exactly what this browser is running.',
     View: About,
   },
 ];
@@ -202,7 +202,7 @@ function Connection() {
         <DaemonLink />
       </Card>
       <p className="text-xs leading-relaxed text-ink-faint">
-        The Browsentic app’s Browsers tab lists every paired browser, and its Settings choose whether a new browser connects by itself, asks you first, or needs a code.
+        The Tuhamho Brow app’s Browsers tab lists every paired browser, and its Settings choose whether a new browser connects by itself, asks you first, or needs a code.
       </p>
     </div>
   );

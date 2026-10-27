@@ -170,7 +170,7 @@ export function SkillMenu({
     tool: 'Your tools',
     command: 'Commands',
     site: 'On this site',
-    general: 'Browsentic skills',
+    general: 'Tuhamho Brow skills',
     agent: `${agent ? agentLabel(agent) : 'Agent'} skills`,
     'other-site': 'Other sites',
   };

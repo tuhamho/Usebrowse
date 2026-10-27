@@ -264,7 +264,7 @@ export function Composer({
           placeholder={
             !connected ? 'Pair the browser to get started' : scheduling ? 'Say what to do, then pick when…' : placeholder
           }
-          aria-label="Instruction for Browsentic"
+          aria-label="Instruction for Tuhamho Brow"
           disabled={!connected}
           rows={sized.rows}
           className={cn('resize-none rounded-none border-0 bg-transparent pb-0 focus-visible:border-0', sized.field)}
@@ -535,7 +535,7 @@ function FileChips({
             )}
             {file.status === 'rejected' && (
               <span className="mt-0.5 block text-[11px] text-amber">
-                Not read — {file.report?.reason?.message ?? 'Browsentic does not read this kind of file.'}
+                Not read — {file.report?.reason?.message ?? 'Tuhamho Brow does not read this kind of file.'}
               </span>
             )}
             {file.status === 'failed' && (

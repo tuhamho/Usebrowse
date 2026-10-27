@@ -116,7 +116,7 @@ export function AgentPicker() {
               onClick={() => void ask({ op: 'grantAgent', agent: active })}
             >
               {busy === active ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
-              Let Browsentic fix it
+              Let Tuhamho Brow fix it
             </Button>
           )}
         </div>

@@ -302,7 +302,7 @@ const KEPT_OUT: BlockedBrowser[] = [
 
 const STORES = {
   'chrome-web-store': { store: 'Chrome Web Store', storeUrl: 'https://chromewebstore.google.com/detail/browsentic/npmocgldfflonjjmdadmdefpnfagnjmp' },
-  firefox: { store: 'Firefox add-on', storeUrl: 'https://github.com/imshaikot/browsentic/releases/download/v0.8.0/browsentic-0.8.0-firefox.xpi' },
+  firefox: { store: 'Firefox add-on', storeUrl: 'https://github.com/tuhamho/Usebrowse/releases/latest' },
 };
 
 function rows(paired: Pick<MockSession, 'id' | 'browser' | 'source' | 'extensionVersion' | 'connected'>[]): BrowserRow[] {
@@ -318,7 +318,7 @@ function rows(paired: Pick<MockSession, 'id' | 'browser' | 'source' | 'extension
       ...STORES[source],
       steps: [
         firefox
-          ? 'Firefox asks whether to let github.com install software, then whether to add Browsentic. Say yes to both.'
+          ? 'Firefox asks whether to let github.com install software, then whether to add Tuhamho Brow. Say yes to both.'
           : id === 'edge'
             ? 'Press “Allow extensions from other stores” if Edge shows it at the top of the page, confirm, and press “Add to Chrome”.'
             : `Press “${label === 'Brave' ? 'Add to Brave' : 'Add to Chrome'}”.`,

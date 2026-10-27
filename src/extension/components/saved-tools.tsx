@@ -89,7 +89,7 @@ function AllowUserScripts() {
   return (
     <p className="mt-1.5 text-[10px] leading-relaxed text-amber">
       Chrome runs a tool on every visit only once <span className="font-medium">Allow User Scripts</span> is on for
-      Browsentic.{' '}
+      Tuhamho Brow.{' '}
       <button type="button" onClick={openUserScriptSettings} className="underline underline-offset-2 hover:text-ink">
         Open settings
       </button>

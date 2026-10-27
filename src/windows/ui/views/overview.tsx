@@ -230,7 +230,7 @@ function ExtensionCard({ model, state }: { model: Model; state: State }) {
   // Open from the start for someone who already loads the unpacked folder.
   const unpacked = shown ?? !!state.stamp;
   const subtitle = state.sessions.some((session) => session.connected)
-    ? 'In your browser and talking to Browsentic Bridge. Store copies update themselves.'
+    ? 'In your browser and talking to Tuhamho Brow Bridge. Store copies update themselves.'
     : {
         auto: 'Load the bundled Tuhamho Brow extension in your browser. It connects to the Bridge by itself.',
       ask: 'Load the bundled Tuhamho Brow extension, then allow it here when it asks to connect.',
@@ -241,7 +241,7 @@ function ExtensionCard({ model, state }: { model: Model; state: State }) {
     <Card>
       <div className="space-y-3.5">
         <SectionTitle title={t('The extension', 'Extension')} subtitle={t(subtitle, ({
-          'In your browser and talking to Browsentic Bridge. Store copies update themselves.': 'Đã có trong trình duyệt và kết nối với Bridge. Extension từ cửa hàng tự cập nhật.',
+          'In your browser and talking to Tuhamho Brow Bridge. Store copies update themselves.': 'Đã có trong trình duyệt và kết nối với Bridge. Extension từ cửa hàng tự cập nhật.',
           'Load the bundled Tuhamho Brow extension in your browser. It connects to the Bridge by itself.': 'Nạp extension Tuhamho Brow đi kèm vào trình duyệt. Extension sẽ tự kết nối Bridge.',
           'Load the bundled Tuhamho Brow extension, then allow it here when it asks to connect.': 'Nạp extension Tuhamho Brow đi kèm, rồi cho phép kết nối khi được hỏi.',
           'Load the bundled Tuhamho Brow extension, then enter the pairing code once.': 'Nạp extension Tuhamho Brow đi kèm, rồi nhập mã ghép nối một lần.',

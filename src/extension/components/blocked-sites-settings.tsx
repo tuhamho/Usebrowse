@@ -61,7 +61,7 @@ export function BlockedSitesSettings() {
         )}
       </SettingsGroup>
 
-      <SettingsGroup title="Check a page" note="Paste an address to see whether Browsentic would act on it.">
+      <SettingsGroup title="Check a page" note="Paste an address to see whether Tuhamho Brow would act on it.">
         <Tester patterns={patterns} />
       </SettingsGroup>
 
@@ -243,7 +243,7 @@ function Tester({ patterns }: { patterns: readonly string[] }) {
             </>
           ) : (
             <>
-              <CircleCheck className="size-3.5" /> Not blocked — Browsentic can act here.
+              <CircleCheck className="size-3.5" /> Not blocked — Tuhamho Brow can act here.
             </>
           )}
         </p>

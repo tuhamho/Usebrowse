@@ -11,9 +11,9 @@ const SUGGESTIONS = [
 ];
 
 const BLOCKED: Record<StatusBlocker, string> = {
-  unpaired: 'This browser isn’t connected to Browsentic Bridge yet. Once the Bridge is on this computer, it connects by itself.',
-  offline: 'Paired, but Browsentic Bridge isn’t answering. Start it and this reconnects on its own.',
-  agent: 'The chosen agent can’t run on this machine. Pick another one, or let Browsentic fix it.',
+  unpaired: 'This browser isn’t connected to Tuhamho Brow Bridge yet. Once the Bridge is on this computer, it connects by itself.',
+  offline: 'Paired, but Tuhamho Brow Bridge isn’t answering. Start it and this reconnects on its own.',
+  agent: 'The chosen agent can’t run on this machine. Pick another one, or let Tuhamho Brow fix it.',
 };
 
 export function Greeting({

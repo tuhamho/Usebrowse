@@ -75,14 +75,14 @@ export function HomeCustomize({
           <Switch checked={choice.sites} label="Show frequent sites" onChange={(sites) => onChange({ ...choice, sites })} />
         </Toggle>
         <Toggle
-          title="Browsentic Home"
+          title="Tuhamho Brow Home"
           note={
             browserOwnNewTab()
               ? 'Off, new tabs open Chrome’s own page again.'
               : 'Off, new tabs show a plain page of your frequent sites. This browser keeps its own new tab page out of an extension’s reach.'
           }
         >
-          <Switch checked label="Open Browsentic Home on new tabs" onChange={onTurnOff} />
+          <Switch checked label="Open Tuhamho Brow Home on new tabs" onChange={onTurnOff} />
         </Toggle>
       </div>
 

@@ -27,7 +27,7 @@ export function AgentsView({ model, state }: { model: Model; state: State }) {
       <Card>
         <SectionTitle
           title="Which agent runs the side panel"
-          subtitle="Browsentic ships no model and needs no API key. It drives the agent CLI you are already signed in to."
+          subtitle="Tuhamho Brow ships no model and needs no API key. It drives the agent CLI you are already signed in to."
         />
       </Card>
       {agents.runners.map((runner) => (

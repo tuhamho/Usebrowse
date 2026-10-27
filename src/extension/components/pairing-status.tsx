@@ -8,7 +8,7 @@ import { LINKS } from '@/lib/about';
 import { BRIDGE_CHANNEL, type ActionResult } from '@/lib/actions/protocol';
 import type { DaemonState } from '@/lib/bridge/socket';
 
-/** One line that installs Browsentic Bridge on any computer, and walks the person through the rest. */
+/** One line that installs Tuhamho Brow Bridge on any computer, and walks the person through the rest. */
 const SETUP_COMMAND = 'npx browsentic@latest setup';
 
 interface Shown {
@@ -33,7 +33,7 @@ export function describePairing(daemon: DaemonState | null, unpacked: boolean): 
   if (pairing?.manual) return { text: 'Disconnected. This browser won’t connect again until you connect it.', retry: 'Connect' };
   if (pairing?.wait) {
     return pairing.wait.approver === 'app'
-      ? { text: 'Allow this browser in the Browsentic app. It connects the moment you do.', busy: true }
+      ? { text: 'Allow this browser in the Tuhamho Brow app. It connects the moment you do.', busy: true }
       : { text: <>Allow this browser on this computer: run <Command>browsentic approve</Command>. It connects the moment you do.</>, busy: true };
   }
   if (pairing?.blocked === 'revoked') return { text: 'This computer disconnected this browser.', retry: 'Reconnect' };
@@ -42,7 +42,7 @@ export function describePairing(daemon: DaemonState | null, unpacked: boolean): 
   switch (daemon?.bridge) {
     case 'missing':
       return {
-        text: 'Browsentic Bridge isn’t on this computer yet. Install it with this command in a terminal, and this browser connects by itself.',
+        text: 'Tuhamho Brow Bridge isn’t on this computer yet. Install it with this command in a terminal, and this browser connects by itself.',
         retry: 'Try again',
         install: true,
       };
@@ -50,7 +50,7 @@ export function describePairing(daemon: DaemonState | null, unpacked: boolean): 
       return {
         text: (
           <>
-            Browsentic Bridge needs an update to connect by itself. Update it from the app, or run{' '}
+            Tuhamho Brow Bridge needs an update to connect by itself. Update it from the app, or run{' '}
             <Command>npx browsentic@latest update</Command>.
           </>
         ),
@@ -58,18 +58,18 @@ export function describePairing(daemon: DaemonState | null, unpacked: boolean): 
       };
     case 'forbidden':
       return unpacked
-        ? { text: <>This copy isn’t registered with Browsentic Bridge. Run <Command>browsentic setup --unpacked</Command>, or pair with a code.</>, retry: 'Try again' }
-        : { text: <>Browsentic Bridge needs an update to let this browser in. Run <Command>npx browsentic@latest update</Command>.</>, retry: 'Try again' };
+        ? { text: <>This copy isn’t registered with Tuhamho Brow Bridge. Run <Command>browsentic setup --unpacked</Command>, or pair with a code.</>, retry: 'Try again' }
+        : { text: <>Tuhamho Brow Bridge needs an update to let this browser in. Run <Command>npx browsentic@latest update</Command>.</>, retry: 'Try again' };
     case 'policy':
-      return { text: 'Your organization’s browser policy keeps Browsentic Bridge from starting. Pair with a code instead.', codeFirst: true };
+      return { text: 'Your organization’s browser policy keeps Tuhamho Brow Bridge from starting. Pair with a code instead.', codeFirst: true };
     case 'stopped':
-      return { text: <>Browsentic Bridge is turned off. Turn it on in the app, or run <Command>browsentic start</Command>.</>, retry: 'Try again' };
+      return { text: <>Tuhamho Brow Bridge is turned off. Turn it on in the app, or run <Command>browsentic start</Command>.</>, retry: 'Try again' };
     case 'off':
       return { text: <>Automatic pairing is off on this computer. Pair with a code from <Command>browsentic pair</Command> or the app.</>, codeFirst: true };
     case 'failed':
-      return { text: `Browsentic Bridge couldn’t start. ${pairing?.error ?? ''}`.trim(), retry: 'Try again' };
+      return { text: `Tuhamho Brow Bridge couldn’t start. ${pairing?.error ?? ''}`.trim(), retry: 'Try again' };
     default:
-      return pairing?.error ? { text: pairing.error, retry: 'Try again' } : { text: 'Looking for Browsentic Bridge on this computer…', busy: true };
+      return pairing?.error ? { text: pairing.error, retry: 'Try again' } : { text: 'Looking for Tuhamho Brow Bridge on this computer…', busy: true };
   }
 }
 
@@ -155,7 +155,7 @@ function InstallSteps() {
       </div>
       <p className="text-[11px] leading-relaxed text-ink-faint">
         It needs Node.js 20 or newer; the install guide also has the Mac and Windows apps. Already installed? Open the
-        Browsentic app, or run <Command>browsentic setup</Command>. On a work computer, your organization’s browser policy may
+        Tuhamho Brow app, or run <Command>browsentic setup</Command>. On a work computer, your organization’s browser policy may
         block it.
       </p>
     </div>

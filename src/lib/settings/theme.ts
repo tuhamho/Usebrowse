@@ -7,7 +7,7 @@
 export type ThemeId = 'ember' | 'midnight' | 'phosphor' | 'daylight';
 
 export const THEMES: { id: ThemeId; name: string; note: string }[] = [
-  { id: 'ember', name: 'Ember', note: 'Warm near-black, cyan brand.' },
+  { id: 'ember', name: 'Tuhamho Blue', note: 'Midnight blue-black with electric blue accents.' },
   { id: 'midnight', name: 'Midnight', note: 'Cool blue-black, violet brand.' },
   { id: 'phosphor', name: 'Phosphor', note: 'A green CRT, grain turned up.' },
   { id: 'daylight', name: 'Daylight', note: 'Ink on paper, for a bright room.' },

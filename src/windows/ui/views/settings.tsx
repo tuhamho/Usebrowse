@@ -38,7 +38,7 @@ export function SettingsView({ model, state }: { model: Model; state: State }) {
           />
           <div className="border-t border-line" />
           <SwitchRow
-            title={t('Turn Browsentic Bridge on when the app opens', 'Tự bật Bridge khi mở ứng dụng')}
+            title={t('Turn Tuhamho Brow Bridge on when the app opens', 'Tự bật Bridge khi mở ứng dụng')}
             subtitle={t('It keeps running after the window closes, so the side panel and MCP clients still work.', 'Bridge tiếp tục chạy sau khi đóng cửa sổ để bảng bên và MCP vẫn hoạt động.')}
             checked={state.startDaemonOnLaunch}
             onChange={(on) => model.setStartDaemonOnLaunch(on)}
@@ -98,7 +98,7 @@ export function SettingsView({ model, state }: { model: Model; state: State }) {
           <div className="min-w-0 flex-1">
             <SectionTitle
               title={t('Uninstall', 'Gỡ cài đặt')}
-              subtitle={t('Stops Browsentic Bridge, unpairs every browser, and removes the command, the unpacked extension, keys, approvals and logs.', 'Dừng Bridge, hủy ghép nối mọi trình duyệt và xóa lệnh, extension, khóa, quyền truy cập và nhật ký.')}
+              subtitle={t('Stops Tuhamho Brow Bridge, unpairs every browser, and removes the command, the unpacked extension, keys, approvals and logs.', 'Dừng Bridge, hủy ghép nối mọi trình duyệt và xóa lệnh, extension, khóa, quyền truy cập và nhật ký.')}
             />
           </div>
           <QuietButton tint="danger" onClick={() => setConfirming(true)}>
@@ -111,7 +111,7 @@ export function SettingsView({ model, state }: { model: Model; state: State }) {
         <ConfirmDialog
           title={t('Uninstall Tuhamho Brow?', 'Gỡ Tuhamho Brow?')}
           message={
-            'This stops Browsentic Bridge, unpairs every browser, and removes %USERPROFILE%\\.browsentic and %USERPROFILE%\\browsentic: the command, the unpacked extension, keys, approvals and logs.\n\nRemove Browsentic from each browser first: right-click its toolbar icon and choose Remove. Afterwards, uninstall the app itself in Settings › Apps › Installed apps.'
+            'This stops Tuhamho Brow Bridge, unpairs every browser, and removes %USERPROFILE%\\.browsentic and %USERPROFILE%\\browsentic: the command, the unpacked extension, keys, approvals and logs.\n\nRemove Tuhamho Brow from each browser first: right-click its toolbar icon and choose Remove. Afterwards, uninstall the app itself in Settings › Apps › Installed apps.'
           }
           action={t('Uninstall', 'Gỡ cài đặt')}
           onCancel={() => setConfirming(false)}
@@ -142,19 +142,19 @@ function SwitchRow({ title, subtitle, checked, onChange }: { title: string; subt
 }
 
 const PAIRING: { mode: PairingMode; title: string; detail: string }[] = [
-  { mode: 'auto', title: 'Automatic', detail: 'A browser with Browsentic connects by itself.' },
+  { mode: 'auto', title: 'Automatic', detail: 'A browser with Tuhamho Brow connects by itself.' },
   { mode: 'ask', title: 'Ask me', detail: 'You allow each new browser here first.' },
   { mode: 'code', title: 'Code only', detail: 'A browser connects only with a code you type into it.' },
 ];
 
-/** How a browser with the extension gets in, kept by Browsentic Bridge in config.json; `browsentic pairing` changes the same setting. */
+/** How a browser with the extension gets in, kept by Tuhamho Brow Bridge in config.json; `browsentic pairing` changes the same setting. */
 function PairingSettings({ model, state }: { model: Model; state: State }) {
   const { t } = useLanguage();
   if (state.daemon !== 'on') return null;
   return (
     <Card>
       <div className="space-y-3.5">
-        <SectionTitle title={t('Pairing', 'Ghép nối')} subtitle={t('How a browser with the extension connects to Browsentic Bridge. Browsers already paired stay paired.', 'Cách trình duyệt có extension kết nối với Bridge. Các trình duyệt đã ghép nối vẫn được giữ nguyên.')} />
+        <SectionTitle title={t('Pairing', 'Ghép nối')} subtitle={t('How a browser with the extension connects to Tuhamho Brow Bridge. Browsers already paired stay paired.', 'Cách trình duyệt có extension kết nối với Bridge. Các trình duyệt đã ghép nối vẫn được giữ nguyên.')} />
         {state.pairingMode ? (
           <div role="radiogroup" aria-label="Pairing" className="grid grid-cols-3 gap-2">
             {PAIRING.map(({ mode, title, detail }) => {
@@ -174,7 +174,7 @@ function PairingSettings({ model, state }: { model: Model; state: State }) {
                 >
                   <span className={cn('block text-[13px] font-semibold', chosen ? 'text-brand' : 'text-ink')}>{t(title, ({ Automatic: 'Tự động', 'Ask me': 'Hỏi trước', 'Code only': 'Chỉ dùng mã' } as const)[title] ?? title)}</span>
                   <span className="block text-[11.5px] leading-snug text-ink-dim">{t(detail, ({
-                    'A browser with Browsentic connects by itself.': 'Trình duyệt có Tuhamho Brow sẽ tự kết nối.',
+                    'A browser with Tuhamho Brow connects by itself.': 'Trình duyệt có Tuhamho Brow sẽ tự kết nối.',
                     'You allow each new browser here first.': 'Bạn cần cho phép từng trình duyệt mới tại đây.',
                     'A browser connects only with a code you type into it.': 'Trình duyệt chỉ kết nối khi bạn nhập mã ghép nối.',
                   } as const)[detail] ?? detail)}</span>
@@ -185,7 +185,7 @@ function PairingSettings({ model, state }: { model: Model; state: State }) {
         ) : (
           <div className="flex items-center gap-3.5">
             <p className="min-w-0 flex-1 text-xs text-ink-dim">
-              This Browsentic Bridge started before browsers could connect by themselves, so it pairs only with a code. Restart it to choose.
+              This Tuhamho Brow Bridge started before browsers could connect by themselves, so it pairs only with a code. Restart it to choose.
             </p>
             <PrimaryButton onClick={() => void model.restartDaemon()}>{t('Restart it', 'Khởi động lại')}</PrimaryButton>
           </div>
@@ -206,7 +206,7 @@ function BrowserSettings({ model, state }: { model: Model; state: State }) {
           <RefreshCw className="size-5 shrink-0 text-amber" strokeWidth={2.5} />
           <div className="min-w-0 flex-1">
             <SectionTitle
-              title={t('Browsentic Bridge predates this app', 'Bridge cần được cập nhật')}
+              title={t('Tuhamho Brow Bridge predates this app', 'Bridge cần được cập nhật')}
               subtitle={t('It is still running from before the last update, so it cannot share the browser theme or the guardrails yet.', 'Bridge đang chạy phiên bản cũ nên chưa đồng bộ được giao diện trình duyệt và quy tắc an toàn.')}
             />
           </div>

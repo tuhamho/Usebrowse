@@ -99,7 +99,7 @@ export default function App() {
           variant="ghost"
           size="icon-sm"
           title="Settings"
-          aria-label="Open Browsentic settings in a tab"
+          aria-label="Open Tuhamho Brow settings in a tab"
           onClick={() => void browser.runtime.openOptionsPage()}
         >
           <SlidersHorizontal className="size-3.5" />
@@ -148,7 +148,7 @@ export default function App() {
               value={voice.input}
               onChange={(event) => voice.setInput(event.target.value)}
               placeholder="What should I do?"
-              aria-label="Instruction for Browsentic"
+              aria-label="Instruction for Tuhamho Brow"
               className="h-8 text-xs"
               disabled={!ready}
             />

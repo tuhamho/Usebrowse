@@ -24,7 +24,7 @@ import { CHECKS, INSTALLS_AUTOMATICALLY, needsAttention, type CheckId, type Chec
 const CHECK: Record<CheckId, { title: string; icon: LucideIcon }> = {
   system: { title: 'This computer', icon: Monitor },
   node: { title: 'Node.js runtime', icon: Hexagon },
-  command: { title: 'Browsentic Bridge', icon: SquareTerminal },
+  command: { title: 'Tuhamho Brow Bridge', icon: SquareTerminal },
   browser: { title: 'A browser', icon: Globe },
   agent: { title: 'An AI agent', icon: Sparkles },
 };
