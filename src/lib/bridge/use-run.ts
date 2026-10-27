@@ -1,0 +1,353 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { browser, type Browser } from 'wxt/browser';
+import type { FocusedElement, RunEvent } from '@/lib/actions/protocol';
+import type { MonitorState } from '@/lib/monitor/events';
+import type { RecordingState } from '@/lib/recordings/events';
+import { SITE_MAPPER_SKILL, type SiteMapDraft } from '@/lib/skills/site-map';
+import type { ToolOffer } from './code-toolkit';
+import type { NewFile } from './file-store';
+import type { SavedToolMeta } from './saved-tools';
+import { attachPreview, notice, reduce, type RunItem } from './run-items';
+import { RUN_PORT, type RunCommand, type RunMessage } from './run-port';
+import { useActiveTab, type ActiveTab } from './use-active-tab';
+import { useTabSessions } from './use-tab-sessions';
+import type { TabSession } from './tab-sessions';
+
+const RECONNECT_MS = 1_000;
+
+const USER_SCRIPTS_RECHECK_MS = 2_000;
+
+const EXTERNAL_VIEW = 'external';
+
+export type { RunItem };
+
+export interface SendOptions {
+  agentSkillId?: string;
+  focus?: FocusedElement;
+  liveTools?: boolean;
+}
+
+export interface CompletedTurn {
+  sessionId: string;
+  runId: string;
+}
+
+const finishedCleanly = (event: RunEvent): boolean => event.kind === 'done' && event.stopReason === 'end_turn';
+
+export interface Run {
+  items: RunItem[];
+  running: boolean;
+  sessionId: string | null;
+  sessions: TabSession[];
+  /** The latest turn an agent saw through to the end, in any conversation, as it happened — never from a replay. */
+  completed: CompletedTurn | null;
+  send: (text: string, opts?: SendOptions) => void;
+  cancel: () => void;
+  decide: (toolId: string, allow: boolean, remember?: boolean) => void;
+  clear: () => void;
+  restore: (sessionId: string) => Promise<void>;
+  focusSession: (sessionId: string) => void;
+  endSession: (sessionId: string) => void;
+  draft: SiteMapDraft | null;
+  mapSite: () => void;
+  activateMap: (exactHost?: boolean) => void;
+  discardMap: () => void;
+  recording: RecordingState | null;
+  startRecording: (captureValues: boolean) => void;
+  stopRecording: () => void;
+  monitors: MonitorState[];
+  stopMonitor: (monitorId: string) => void;
+  /** Tools the user kept, for the `/` menu and `/remove-tools`. Metadata only, never code. */
+  tools: SavedToolMeta[];
+  /** Raised a second after an approved toolkit lands, asking whether to keep it. */
+  toolOffer: ToolOffer | null;
+  autoRunReady: boolean;
+  keepTool: (slug?: string, autoRun?: boolean) => void;
+  dismissTool: () => void;
+  forgetTool: (id: string) => void;
+  setAutoRun: (id: string, on: boolean) => void;
+  runTool: (id: string) => void;
+  /** Gives a file the panel has stored to the conversation of the tab in front, which reads it. */
+  attachFile: (file: NewFile) => void;
+  detachFile: (fileId: string) => void;
+  reanalyzeFile: (fileId: string) => void;
+}
+
+/** Follows the tab in front, unless given a tab of its own to stay on. */
+export function useRun(pinned?: ActiveTab): Run {
+  const [drafts, setDrafts] = useState<Record<string, SiteMapDraft>>({});
+  const [recording, setRecording] = useState<RecordingState | null>(null);
+  const [monitors, setMonitors] = useState<MonitorState[]>([]);
+  const [offer, setOffer] = useState<ToolOffer | null>(null);
+  const [tools, setTools] = useState<SavedToolMeta[]>([]);
+  const [autoRunReady, setAutoRunReady] = useState(false);
+  const [bySession, setBySession] = useState<Record<string, RunItem[]>>({});
+  const [completed, setCompleted] = useState<CompletedTurn | null>(null);
+  const port = useRef<Browser.runtime.Port | null>(null);
+
+  const front = useActiveTab();
+  const tab = pinned ?? front;
+  const sessions = useTabSessions();
+  const displayed = useMemo(
+    () => (tab.tabId == null ? null : (sessions.find((s) => s.tabIds.includes(tab.tabId!)) ?? null)),
+    [sessions, tab.tabId],
+  );
+  const sessionId = displayed?.sessionId ?? null;
+
+  const write = useCallback((key: string, change: (items: RunItem[]) => RunItem[]) => {
+    setBySession((previous) => ({ ...previous, [key]: change(previous[key] ?? []) }));
+  }, []);
+
+  const forget = useCallback((...keys: string[]) => {
+    setBySession((previous) => {
+      const next = { ...previous };
+      for (const key of keys) delete next[key];
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+
+    const connect = () => {
+      if (!live) return;
+      let connected: Browser.runtime.Port;
+      try {
+        connected = browser.runtime.connect({ name: RUN_PORT });
+      } catch {
+        retry = setTimeout(connect, RECONNECT_MS);
+        return;
+      }
+      port.current = connected;
+
+      connected.onMessage.addListener((message) => {
+        const runMessage = message as RunMessage;
+        if (runMessage.op === 'mapDraft') {
+          setDrafts((previous) => ({ ...previous, [runMessage.sessionId ?? EXTERNAL_VIEW]: runMessage.draft }));
+        } else if (runMessage.op === 'mapSettled') {
+          setDrafts((previous) =>
+            Object.fromEntries(Object.entries(previous).filter(([, held]) => held.stagingId !== runMessage.stagingId)),
+          );
+          if (!runMessage.ok && runMessage.message) {
+            write(runMessage.sessionId ?? EXTERNAL_VIEW, (items) => [...items, notice('error', runMessage.message!)]);
+          }
+        } else if (runMessage.op === 'recording') setRecording(runMessage.state);
+        else if (runMessage.op === 'monitor') {
+          const state = runMessage.state;
+          setMonitors((previous) => {
+            const others = previous.filter((m) => m.monitorId !== state.monitorId);
+            return state.phase === 'watching' ? [...others, state] : others;
+          });
+        } else if (runMessage.op === 'items') {
+          write(runMessage.sessionId ?? EXTERNAL_VIEW, () => runMessage.items);
+        } else if (runMessage.op === 'item') {
+          write(runMessage.sessionId ?? EXTERNAL_VIEW, (items) => [...items, runMessage.item]);
+        } else if (runMessage.op === 'preview') {
+          write(runMessage.sessionId ?? EXTERNAL_VIEW, (items) => attachPreview(items, runMessage.preview));
+        } else if (runMessage.op === 'toolOffer') {
+          setOffer(runMessage.offer);
+        } else if (runMessage.op === 'toolOfferSettled') {
+          setOffer((held) => (held?.toolkitId === runMessage.toolkitId ? null : held));
+        } else if (runMessage.op === 'tools') {
+          setTools(runMessage.tools);
+          setAutoRunReady(runMessage.autoRunReady);
+        } else if (runMessage.op === 'close') {
+          window.close();
+        } else {
+          const { sessionId: owner, runId, event } = runMessage;
+          if (owner && finishedCleanly(event)) setCompleted({ sessionId: owner, runId });
+          write(owner ?? EXTERNAL_VIEW, (items) => reduce(items, event));
+        }
+      });
+
+      connected.onDisconnect.addListener(() => {
+        if (port.current === connected) port.current = null;
+        if (live) retry = setTimeout(connect, RECONNECT_MS);
+      });
+    };
+
+    connect();
+    return () => {
+      live = false;
+      clearTimeout(retry);
+      const open = port.current;
+      port.current = null;
+      open?.disconnect();
+    };
+  }, [write]);
+
+  const post = useCallback((command: RunCommand): boolean => {
+    const open = port.current;
+    if (!open) return false;
+    try {
+      open.postMessage(command);
+      return true;
+    } catch {
+      port.current = null;
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (sessionId) post({ op: 'replay', sessionId });
+  }, [sessionId, post]);
+
+  const awaitingUserScripts = !autoRunReady && (!!offer || tools.some((tool) => tool.autoRun));
+  useEffect(() => {
+    if (!awaitingUserScripts) return;
+    const recheck = setInterval(() => post({ op: 'listTools' }), USER_SCRIPTS_RECHECK_MS);
+    return () => clearInterval(recheck);
+  }, [awaitingUserScripts, post]);
+
+  const items = useMemo(() => {
+    const own = sessionId ? (bySession[sessionId] ?? []) : [];
+    const external = bySession[EXTERNAL_VIEW] ?? [];
+    return external.length ? [...own, ...external] : own;
+  }, [sessionId, bySession]);
+
+  const draft = (sessionId ? drafts[sessionId] : undefined) ?? drafts[EXTERNAL_VIEW] ?? null;
+
+  const send = useCallback(
+    (text: string, opts?: SendOptions) => {
+      const trimmed = text.trim();
+      if (!trimmed || tab.tabId == null) return;
+      post({
+        op: 'instruct',
+        text: trimmed,
+        agentSkillId: opts?.agentSkillId,
+        focus: opts?.focus,
+        liveTools: opts?.liveTools,
+        tab: { tabId: tab.tabId, url: tab.url, windowId: tab.windowId, title: tab.title },
+      });
+    },
+    [post, tab],
+  );
+
+  const focusSession = useCallback((target: string) => {
+    const session = sessions.find((s) => s.sessionId === target);
+    if (!session) return;
+    void (async () => {
+      if (session.windowId >= 0) await browser.windows.update(session.windowId, { focused: true }).catch(() => undefined);
+      await browser.tabs.update(session.currentTabId, { active: true }).catch(() => undefined);
+    })();
+  }, [sessions]);
+
+  const restore = useCallback(
+    async (target: string) => {
+      if (tab.tabId == null) return;
+      const live = sessions.find((s) => s.sessionId === target);
+      if (live) return focusSession(target);
+      post({
+        op: 'restore',
+        sessionId: target,
+        tab: { tabId: tab.tabId, url: tab.url, windowId: tab.windowId, title: tab.title },
+      });
+    },
+    [post, sessions, tab, focusSession],
+  );
+
+  return {
+    items,
+    running: displayed?.runId != null,
+    sessionId,
+    sessions,
+    completed,
+    send,
+    draft,
+    mapSite: useCallback(() => send(`@${SITE_MAPPER_SKILL} map this site`), [send]),
+    activateMap: useCallback(
+      (exactHost?: boolean) => {
+        if (draft) post({ op: 'activateMap', stagingId: draft.stagingId, exactHost });
+      },
+      [draft, post],
+    ),
+    discardMap: useCallback(() => {
+      if (draft) post({ op: 'discardMap', stagingId: draft.stagingId });
+    }, [draft, post]),
+    recording,
+    startRecording: useCallback(
+      (captureValues: boolean) => {
+        post({ op: 'startRecording', captureValues });
+      },
+      [post],
+    ),
+    stopRecording: useCallback(() => {
+      post({ op: 'stopRecording' });
+    }, [post]),
+    tools,
+    toolOffer: offer,
+    autoRunReady,
+    keepTool: useCallback(
+      (slug?: string, autoRun?: boolean) => {
+        if (offer && tab.tabId != null) {
+          post({ op: 'keepTool', toolkitId: offer.toolkitId, tabId: tab.tabId, slug, autoRun });
+        }
+      },
+      [offer, post, tab.tabId],
+    ),
+    dismissTool: useCallback(() => {
+      if (offer) post({ op: 'dismissTool', toolkitId: offer.toolkitId });
+    }, [offer, post]),
+    forgetTool: useCallback(
+      (id: string) => {
+        post({ op: 'forgetTool', id });
+      },
+      [post],
+    ),
+    setAutoRun: useCallback(
+      (id: string, on: boolean) => {
+        post({ op: 'autoRunTool', id, on });
+      },
+      [post],
+    ),
+    runTool: useCallback(
+      (id: string) => {
+        if (tab.tabId != null) {
+          post({ op: 'runTool', id, tab: { tabId: tab.tabId, url: tab.url, windowId: tab.windowId, title: tab.title } });
+        }
+      },
+      [post, tab],
+    ),
+    attachFile: useCallback(
+      (file: NewFile) => {
+        if (tab.tabId != null) {
+          post({ op: 'attach', file, tab: { tabId: tab.tabId, url: tab.url, windowId: tab.windowId, title: tab.title } });
+        }
+      },
+      [post, tab],
+    ),
+    detachFile: useCallback((fileId: string) => post({ op: 'detach', fileId }), [post]),
+    reanalyzeFile: useCallback((fileId: string) => post({ op: 'reanalyze', fileId }), [post]),
+    monitors,
+    stopMonitor: useCallback(
+      (monitorId: string) => {
+        post({ op: 'stopMonitor', monitorId });
+      },
+      [post],
+    ),
+    cancel: useCallback(() => {
+      if (sessionId) post({ op: 'cancel', sessionId });
+    }, [post, sessionId]),
+    decide: useCallback(
+      (toolId: string, allow: boolean, remember?: boolean) => {
+        if (sessionId) post({ op: 'decision', sessionId, toolId, allow, remember });
+      },
+      [post, sessionId],
+    ),
+    clear: useCallback(() => {
+      if (!sessionId) return;
+      forget(sessionId, EXTERNAL_VIEW);
+      post({ op: 'endSession', sessionId });
+    }, [post, sessionId, forget]),
+    endSession: useCallback(
+      (target: string) => {
+        forget(target);
+        post({ op: 'endSession', sessionId: target });
+      },
+      [post, forget],
+    ),
+    restore,
+    focusSession,
+  };
+}

@@ -1,0 +1,12 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  // src/daemon is a separate Node package with its own tsconfig, checked by
+  // `yarn daemon:compile`. It shares src/lib with the extension but nothing else.
+  "exclude": ["node_modules", "dist", ".wxt/types-check", "src/daemon"]
+}

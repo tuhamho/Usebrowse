@@ -1,0 +1,523 @@
+# Cuts a GitHub release when a v* tag is pushed.
+#
+# The tag is both the trigger and the source of truth. CI bumps nothing and tags nothing:
+# it rebuilds the tagged commit from scratch, checks the build agrees with the tag, and
+# publishes the three store archives under a release of that name, then the Mac app, the
+# Windows app, the signed Firefox add-on and the MCP Registry entry in their own jobs. So the whole local half
+# of a release is "bump both package.json files and server.json, commit, tag vX.Y.Z, push
+# the tag".
+#
+# Two properties this leans on:
+#   - Both package.json files and server.json must already say X.Y.Z at the tagged commit. A
+#     mismatch fails the run rather than shipping a zip whose filename disagrees with its
+#     manifest.
+#   - An annotated tag's own message, if it has one, becomes the release notes verbatim.
+#     Otherwise they are generated from the conventional-commit log since the previous tag.
+#     Either way scripts/release-notes.mjs decides, and it runs the same locally.
+#
+# Anything that creates the release by hand (`gh release create` for the same tag) races
+# this workflow, and whichever call lands second fails on an existing release.
+#
+# One gotcha: a tag push runs the workflow as it exists *in the tagged commit*, not as it
+# exists on main. Re-tagging a commit from before this file was added therefore does
+# nothing, and editing this workflow only takes effect from the next tag cut after it.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# The release step needs to write to the Releases API. id-token is what npm Trusted
+# Publishing mints its short-lived credential from, so the publish step needs no secret at
+# all and gets a provenance attestation for free.
+permissions:
+  contents: write
+  id-token: write
+
+# One tag at a time, and never cancel a run mid-upload: a half-uploaded release is worse
+# than a slow queue.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Notes come from the commit log since the previous tag, so a shallow clone
+          # would render an empty changelog rather than fail.
+          fetch-depth: 0
+
+      - name: Resolve the version and check every manifest agrees with the tag
+        # package.json is an output of `prepare`, not an input, so a mismatch means the tag
+        # was cut by hand at the wrong commit. Catching it here beats shipping a zip whose
+        # filename and manifest disagree with the release it hangs under.
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$tag' is not a vX.Y.Z tag"
+            exit 1
+          fi
+          for file in package.json src/daemon/package.json server.json; do
+            # server.json repeats the version on the npm package it names.
+            found=$(node -p "const m = require('./$file'); [...new Set([m.version, ...(m.packages ?? []).map((p) => p.version)])].join(', ')")
+            if [ "$found" != "$version" ]; then
+              echo "::error::$file says $found but the tag is $tag"
+              exit 1
+            fi
+          done
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        # Yarn is vendored at the path .yarnrc.yml pins, so this does not depend on whichever
+        # yarn the runner image ships (its classic 1.x cannot read yarnPath at all). Running
+        # the release through node needs nothing but node. src/daemon is a separate project with its
+        # own lockfile, so the root install does not cover it.
+        run: |
+          yarn_bin=$(sed -n 's/^yarnPath: *//p' .yarnrc.yml)
+          test -f "$yarn_bin" || { echo "::error::no vendored Yarn at '$yarn_bin'"; exit 1; }
+          echo "YARN=$yarn_bin" >> "$GITHUB_ENV"
+          node "$yarn_bin" install --immutable
+          node "$yarn_bin" --cwd src/daemon install --immutable
+
+      - name: Check
+        # The same gate CONTRIBUTING.md asks for before a pull request: both type checks, then the
+        # tests and their coverage floors.
+        run: node "$YARN" check
+
+      - name: Build the store archives and the daemon
+        # WXT reads the version out of package.json at build time, so it lands in the manifest
+        # and in the zip filename. The firefox zip emits the sources zip as a side effect;
+        # there is no separate command for it.
+        run: |
+          node "$YARN" zip
+          node "$YARN" zip -b firefox
+          node "$YARN" daemon:build
+
+      - name: Verify the build carries the tagged version
+        run: |
+          built=$(node -p "require('./dist/chrome-mv3/manifest.json').version")
+          if [ "$built" != "$VERSION" ]; then
+            echo "::error::built manifest says $built, expected $VERSION"
+            exit 1
+          fi
+          for asset in chrome firefox sources; do
+            test -s "dist/browsentic-$VERSION-$asset.zip" || {
+              echo "::error::missing artifact: dist/browsentic-$VERSION-$asset.zip"
+              exit 1
+            }
+          done
+
+      - name: Pack and smoke-test the npm tarball
+        # `npm pack` runs src/daemon/scripts/stage-extension.mjs through prepack, so this exercises
+        # the same path a maintainer gets locally. Everything below runs against the real
+        # tarball rather than the working tree, and it runs before anything is published,
+        # because an npm version cannot be taken back.
+        run: |
+          # tail -1 because npm pack prints the tarball name to stdout and anything a
+          # prepack script logs there lands ahead of it. Kept as a belt on top of
+          # stage-extension.mjs logging to stderr: a two-line capture here poisons every
+          # path below it, and the failure reads as "the tarball carries no extension".
+          tarball="$(cd src/daemon && npm pack --silent | tail -1)"
+          echo "TARBALL=$GITHUB_WORKSPACE/src/daemon/$tarball" >> "$GITHUB_ENV"
+
+          tar -tzf "src/daemon/$tarball" | grep -q 'package/extension/chrome-mv3/manifest.json' \
+            || { echo "::error::the tarball carries no extension"; exit 1; }
+          if tar -tzf "src/daemon/$tarball" | grep -q '\.map$'; then
+            echo "::error::sourcemaps leaked into the tarball"; exit 1
+          fi
+
+          mkdir -p /tmp/smoke && cd /tmp/smoke && npm init -y >/dev/null
+          npm i --no-audit --no-fund "$GITHUB_WORKSPACE/src/daemon/$tarball"
+
+          # Zero runtime dependencies. This is the guard that catches someone moving a
+          # package back into `dependencies` and quietly restoring the 33 MB install.
+          deps=$(ls node_modules | grep -cv '^\.')
+          test "$deps" -eq 1 || {
+            echo "::error::expected 1 installed package, found $deps"; ls node_modules; exit 1
+          }
+
+          npx browsentic --version | grep -qx "$VERSION"
+          npx browsentic tools | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=JSON.parse(s);if(!Array.isArray(t)||t.length<40)throw new Error("tool manifest looks wrong: "+t.length)})'
+
+          export HOME=/tmp/smoke-home BROWSENTIC_HOME=/tmp/smoke-home/.browsentic
+          mkdir -p "$HOME"
+          # With no terminal and no --browser, setup prints the plan and never asks: the apps and
+          # scripts run it this way. The unpacked folder is opt-in, so none may appear.
+          npx browsentic setup --no-pair --json </dev/null \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s.slice(s.indexOf("{")));if(!Array.isArray(r.browsers)||r.extensionDir!==null)throw new Error("setup plan looks wrong")})'
+          test ! -e "$HOME/browsentic/extension" || { echo "::error::setup wrote the unpacked folder without --unpacked"; exit 1; }
+          npx browsentic setup --unpacked --no-pair --no-wait --json </dev/null
+          node -p "require('$HOME/browsentic/extension/chrome-mv3/manifest.json').version" | grep -qx "$VERSION"
+
+          # The MCP handshake, on both entry points. Bare invocation of the legacy bin must
+          # keep serving, and `browsentic mcp` must serve too: an agent run spawns the CLI
+          # itself, so a regression here breaks every side-panel run silently.
+          cat > /tmp/probe.cjs <<'PROBE'
+          const { spawn } = require('child_process');
+          const [, , bin, ...args] = process.argv;
+          const p = spawn(bin, args, { stdio: ['pipe', 'pipe', 'inherit'] });
+          let out = '';
+          const finish = (code) => { try { p.kill('SIGKILL'); } catch {} process.exit(code); };
+          p.stdout.on('data', (d) => { out += d; if (out.includes('serverInfo')) finish(0); });
+          p.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'smoke', version: '0' } } }) + '\n');
+          setTimeout(() => { console.error('no serverInfo from ' + bin + ' ' + args.join(' ')); finish(1); }, 20000);
+          PROBE
+          node /tmp/probe.cjs ./node_modules/.bin/browsentic mcp \
+            || { echo "::error::browsentic mcp did not answer initialize"; exit 1; }
+          node /tmp/probe.cjs ./node_modules/.bin/browsentic-mcp \
+            || { echo "::error::browsentic-mcp lost bare-invocation MCP serving"; exit 1; }
+
+          npx browsentic stop || true
+
+      - name: Release notes
+        # Prefers the text `prepare` wrote into the annotated tag, and falls back to reading
+        # the conventional-commit log when the tag carries none.
+        #
+        # actions/checkout materialises the pushed tag as a lightweight ref, so `cat-file -t`
+        # says `commit` and the annotated tag's own message is invisible — which silently
+        # published log-generated notes over hand-curated ones in v0.4.10. Re-fetching the
+        # ref restores the real tag object.
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git cat-file -t "$TAG")" = tag \
+            || echo "::warning::$TAG is lightweight; notes will come from the commit log"
+          node scripts/release-notes.mjs "$VERSION" --out "dist/RELEASE_NOTES-$TAG.md"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --verify-tag \
+            --notes-file "dist/RELEASE_NOTES-$TAG.md" \
+            "dist/browsentic-$VERSION-chrome.zip" \
+            "dist/browsentic-$VERSION-firefox.zip" \
+            "dist/browsentic-$VERSION-sources.zip"
+          gh release view "$TAG" --json url -q '"released: " + .url' >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------------------
+  # Publishes with no NODE_AUTH_TOKEN: npmjs.com trusts this repo's release.yml as the
+  # package's publisher (package Settings → Trusted Publisher), and the id-token permission
+  # above is what npm exchanges for its short-lived credential. The same exchange signs the
+  # release — npm generates and uploads a Sigstore provenance attestation, shown on the
+  # package page. Removing the trusted publisher on npmjs.com is what turns this off.
+  #
+  # This is deliberately the LAST step. A GitHub release can be deleted; an npm version
+  # cannot — unpublish is restricted to 72 hours and burns the number permanently. Anything
+  # that can still fail should have failed by now.
+  # ---------------------------------------------------------------------------------------
+      - name: Publish to npm
+        working-directory: src/daemon
+        env:
+          NPM_CONFIG_PROVENANCE: true
+        run: |
+          if npm view "browsentic@$VERSION" version >/dev/null 2>&1; then
+            echo "browsentic@$VERSION is already on npm, skipping" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          npm publish
+          echo "published: https://www.npmjs.com/package/browsentic/v/$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------------------
+  # The macOS app, attached to the release the job above created. A separate job because it
+  # needs a Mac, and after it rather than before because it is the one artifact that can be
+  # rebuilt and re-uploaded by hand: a failure here leaves a release without a DMG, never a
+  # DMG without a release.
+  #
+  # Notarized when five repository secrets exist, ad hoc when they do not: MACOS_CERT_P12 (a
+  # base64 "Developer ID Application" certificate with its key), MACOS_CERT_PASSWORD,
+  # APPLE_ID, APPLE_TEAM_ID and APPLE_APP_PASSWORD (an app-specific password). An ad hoc build
+  # is blocked by Gatekeeper on download; docs/guide/mac-app.md says how to get past that.
+  # ---------------------------------------------------------------------------------------
+  mac:
+    needs: release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Build the extension and the daemon the app carries
+        run: |
+          yarn_bin=$(sed -n 's/^yarnPath: *//p' .yarnrc.yml)
+          node "$yarn_bin" install --immutable
+          node "$yarn_bin" --cwd src/daemon install --immutable
+          node "$yarn_bin" build
+          node "$yarn_bin" daemon:build
+
+      - name: Import the Developer ID certificate, when there is one
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "::warning::no MACOS_CERT_P12 secret, so this DMG is ad hoc and Gatekeeper will block it on download"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)"
+          test -n "$identity" || { echo "::error::MACOS_CERT_P12 holds no Developer ID Application identity"; exit 1; }
+          echo "CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Build Browsentic.app and the disk image
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          src/mac/Scripts/build-app.sh
+          src/mac/Scripts/make-dmg.sh
+          test -s "dist/mac/Browsentic-${GITHUB_REF_NAME#v}.dmg"
+
+      - name: Attach the disk image to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "dist/mac/Browsentic-${GITHUB_REF_NAME#v}.dmg" --clobber
+
+  # ---------------------------------------------------------------------------------------
+  # The Windows app, beside the Mac one: a per-user installer for each architecture, with the
+  # signature its in-app updater checks, then the latest.json that installed copies poll. A job of
+  # its own for the same reason as the Mac app: a failure here leaves a release without an
+  # installer, never an installer without a release.
+  #
+  # The updater's key comes from two repository secrets, TAURI_SIGNING_PRIVATE_KEY and
+  # TAURI_SIGNING_PRIVATE_KEY_PASSWORD; its public half is in tauri.conf.json, and a release built
+  # without it could never update itself, so the job fails instead. Authenticode waits on Azure
+  # Trusted Signing: until AZURE_* secrets exist the installer is unsigned, SmartScreen warns on a
+  # downloaded copy, and the one-line PowerShell install, which leaves no download mark, does not.
+  # ---------------------------------------------------------------------------------------
+  windows-app:
+    needs: release
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep line endings as committed
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Add the Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/windows
+          key: ${{ matrix.target }}
+
+      - name: Build the extension and the daemon the app carries
+        run: |
+          yarn_bin=$(sed -n 's/^yarnPath: *//p' .yarnrc.yml)
+          echo "YARN=$yarn_bin" >> "$GITHUB_ENV"
+          node "$yarn_bin" install --immutable
+          node "$yarn_bin" --cwd src/daemon install --immutable
+          node "$yarn_bin" build
+          node "$yarn_bin" daemon:build
+
+      - name: Build and sign the installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+          AZURE_CODE_SIGNING_NAME: ${{ secrets.AZURE_CODE_SIGNING_NAME }}
+          AZURE_CERT_PROFILE_NAME: ${{ secrets.AZURE_CERT_PROFILE_NAME }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::no TAURI_SIGNING_PRIVATE_KEY secret: an installer the updater cannot verify would strand every copy on this version"
+            exit 1
+          fi
+          authenticode=()
+          if [ -n "$AZURE_CLIENT_ID" ]; then
+            cargo install --locked trusted-signing-cli
+            sign="trusted-signing-cli -e $AZURE_ENDPOINT -a $AZURE_CODE_SIGNING_NAME -c $AZURE_CERT_PROFILE_NAME -d Browsentic %1"
+            authenticode=(--config "{\"bundle\":{\"windows\":{\"signCommand\":\"$sign\"}}}")
+          else
+            echo "::warning::no AZURE_CLIENT_ID secret, so this installer is unsigned and SmartScreen warns on a downloaded copy"
+          fi
+          node "$YARN" tauri build --target ${{ matrix.target }} "${authenticode[@]}"
+          version="${GITHUB_REF_NAME#v}"
+          bundle="src/windows/target/${{ matrix.target }}/release/bundle/nsis"
+          mkdir -p dist/windows
+          cp "$bundle/Browsentic_${version}_${{ matrix.arch }}-setup.exe" "dist/windows/Browsentic-${version}-${{ matrix.arch }}-setup.exe"
+          cp "$bundle/Browsentic_${version}_${{ matrix.arch }}-setup.exe.sig" "dist/windows/Browsentic-${version}-${{ matrix.arch }}-setup.exe.sig"
+
+      - name: Attach the installer to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/windows/* --clobber
+
+  windows-feed:
+    needs: windows-app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Point installed Windows apps at this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --pattern 'Browsentic-*-setup.exe.sig' --dir signatures
+          node scripts/windows-latest-json.ts "${GITHUB_REF_NAME#v}" signatures > latest.json
+          gh release upload "$GITHUB_REF_NAME" latest.json --clobber
+
+  # ---------------------------------------------------------------------------------------
+  # The Firefox add-on release Firefox will actually install: the firefox zip, signed by
+  # addons.mozilla.org on the unlisted channel, plus the updates.json that installed copies
+  # poll. Its own job for the same reason as the Mac app — a failure here leaves a release
+  # without an .xpi, never an .xpi without a release — and because Mozilla's queue can take
+  # an hour that npm and the DMG should not wait on.
+  #
+  # Needs two repository secrets from addons.mozilla.org → Developer Hub → Manage API Keys:
+  # AMO_JWT_ISSUER (`user:…:…`) and AMO_JWT_SECRET. Without them the job warns and ends,
+  # and the unsigned zip stays the only Firefox asset.
+  #
+  # AMO signs each version once per add-on id, ever. A re-run of a tag that already signed
+  # therefore fails the sign step; the recovery is by hand and the step summary says how.
+  # ---------------------------------------------------------------------------------------
+  firefox:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Build the Firefox add-on and its sources
+        run: |
+          yarn_bin=$(sed -n 's/^yarnPath: *//p' .yarnrc.yml)
+          echo "YARN=$yarn_bin" >> "$GITHUB_ENV"
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          node "$yarn_bin" install --immutable
+          node "$yarn_bin" zip -b firefox
+          test -s "dist/browsentic-${GITHUB_REF_NAME#v}-sources.zip"
+
+      - name: Have addons.mozilla.org sign it
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$WEB_EXT_API_KEY" ]; then
+            echo "::warning::no AMO_JWT_ISSUER secret, so this release carries only the unsigned Firefox zip"
+            exit 0
+          fi
+          versions="https://addons.mozilla.org/developers/addon/browsentic/versions"
+          if node "$YARN" sign:firefox \
+               --approval-timeout 3600000 \
+               --upload-source-code "dist/browsentic-$VERSION-sources.zip" 2>&1 | tee sign.log; then
+            xpi=$(ls dist/*.xpi | head -1)
+            test -s "$xpi" || { echo "::error::web-ext reported success but wrote no .xpi"; exit 1; }
+            mv "$xpi" "dist/browsentic-$VERSION-firefox.xpi"
+            echo "SIGNED=dist/browsentic-$VERSION-firefox.xpi" >> "$GITHUB_ENV"
+          elif grep -qi 'version already exists\|Version .* already exists' sign.log; then
+            echo "::warning::$VERSION was already signed on AMO; download it from $versions, then run scripts/firefox-updates.ts and gh release upload by hand"
+            echo "firefox: $VERSION already signed — attach it by hand from $versions" >> "$GITHUB_STEP_SUMMARY"
+          elif grep -qi 'timed out\|timeout' sign.log; then
+            echo "::warning::AMO has not approved $VERSION within an hour; it will appear at $versions, then run scripts/firefox-updates.ts and gh release upload by hand"
+            echo "firefox: still in Mozilla's queue — attach it by hand from $versions" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::signing failed; see sign.log above"
+            exit 1
+          fi
+
+      - name: Attach the signed add-on, then the update manifest that points at it
+        # The .xpi goes up first: an updates.json that names a file not yet uploaded would
+        # send every installed Firefox after a 404 until the next poll.
+        if: env.SIGNED != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/firefox-updates.ts "$SIGNED" dist/updates.json
+          gh release upload "$GITHUB_REF_NAME" "$SIGNED" --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/updates.json --clobber
+          echo "firefox: signed .xpi and updates.json attached" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------------------
+  # Lists the MCP server in the official MCP Registry, which the other MCP directories read
+  # from, under the name in server.json. The registry checks that name twice: this
+  # repository's OIDC token grants io.github.imshaikot/*, and the npm version server.json
+  # points at must carry the same name as its mcpName.
+  #
+  # After the release job, so that npm version exists. npm's public document can trail the
+  # publish by minutes, hence the wait. A failure here leaves the release and npm as they
+  # are: re-run the job, or publish by hand with `mcp-publisher login github`.
+  # ---------------------------------------------------------------------------------------
+  mcp-registry:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip a version the registry already lists
+        run: |
+          name=$(node -p "require('./server.json').name")
+          entry="https://registry.modelcontextprotocol.io/v0.1/servers/${name/\//%2F}/versions/${GITHUB_REF_NAME#v}"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+          echo "ENTRY=$entry" >> "$GITHUB_ENV"
+          if curl -sf -o /dev/null "$entry"; then
+            echo "SKIP=1" >> "$GITHUB_ENV"
+            echo "mcp registry: $entry already exists, skipping" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Wait for npm to serve the version with its mcpName
+        if: env.SKIP != '1'
+        run: |
+          for _ in $(seq 60); do
+            [ "$(npm view "browsentic@${GITHUB_REF_NAME#v}" mcpName 2>/dev/null)" = "$NAME" ] && exit 0
+            sleep 10
+          done
+          echo "::error::npm has not served browsentic@${GITHUB_REF_NAME#v} with mcpName $NAME for ten minutes"
+          exit 1
+
+      - name: Publish to the MCP Registry
+        if: env.SKIP != '1'
+        run: |
+          curl -sfL https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz | tar xz mcp-publisher
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+          echo "mcp registry: $ENTRY" >> "$GITHUB_STEP_SUMMARY"

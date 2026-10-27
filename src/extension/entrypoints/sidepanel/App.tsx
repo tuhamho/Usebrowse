@@ -1,0 +1,541 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowDown, PanelRightClose, PictureInPicture2, SlidersHorizontal, SquarePen } from 'lucide-react';
+import { browser } from 'wxt/browser';
+
+import { isAndroidCommand, isHandsFreeCommand, isRemoveToolsCommand } from '@/lib/bridge/commands';
+import { BRIDGE_CHANNEL, type FocusedElement } from '@/lib/actions/protocol';
+import { MAX_STORED_FILE_BYTES } from '@/lib/files/report';
+import { Wordmark } from '@/extension/components/brand';
+import { BLOCKED_HERE, BlockedSiteNote } from '@/extension/components/blocked-site-note';
+import { Composer, type AttachedSkill } from '@/extension/components/composer';
+import { ConnectionSheet } from '@/extension/components/connection-sheet';
+import { DetachVeil } from '@/extension/components/detach-veil';
+import { DropMask } from '@/extension/components/drop-mask';
+import { Greeting } from '@/extension/components/greeting';
+import { MonitorBar } from '@/extension/components/monitor-bar';
+import { PanelNav, type PanelTab } from '@/extension/components/panel-nav';
+import { PhoneToggle, usePhoneSwitch } from '@/extension/components/phone-toggle';
+import { currentTarget } from '@/lib/bridge/phone';
+import { useMirroredPhone } from '@/lib/bridge/phone-client';
+import { RecordingBar } from '@/extension/components/recording-bar';
+import { RecordingPanel } from '@/extension/components/recording-panel';
+import { RunTimeline } from '@/extension/components/run-timeline';
+import { KeepToolPrompt, SavedToolList } from '@/extension/components/saved-tools';
+import { SessionList } from '@/extension/components/session-list';
+import { SessionRail } from '@/extension/components/session-rail';
+import { SiteMapReview } from '@/extension/components/site-map-review';
+import { SkillsPanel } from '@/extension/components/skills-panel';
+import { StarBadge } from '@/extension/components/star-badge';
+import { TaskPanel } from '@/extension/components/task-panel';
+import { UpdatePill } from '@/extension/components/update-pill';
+import type { TaskSeed } from '@/extension/components/task-editor';
+import { StatusPill, describeStatus } from '@/extension/components/status-pill';
+import { Button } from '@/extension/components/ui/button';
+import { ScrollArea } from '@/extension/components/ui/scroll-area';
+import { pickFocus } from '@/lib/bridge/aeye';
+import { removeRecording, type StoredRecordingMeta } from '@/lib/bridge/recording-store';
+import { removeSession } from '@/lib/bridge/session-store';
+import { useActiveTabUrl } from '@/lib/bridge/use-active-tab-url';
+import { useActionCues, useBlockedPattern } from '@/lib/bridge/use-extension-settings';
+import { useAttachFiles } from '@/lib/bridge/use-attach-files';
+import { useAutoPair } from '@/lib/bridge/use-auto-pair';
+import { useDaemonState } from '@/lib/bridge/use-daemon-state';
+import { useFileDrop } from '@/lib/bridge/use-file-drop';
+import { closeSidePanel } from '@/lib/bridge/side-panel';
+import { startHandsFree } from '@/lib/bridge/panel-view';
+import { usePanelCollapsed, usePanelTab } from '@/lib/bridge/use-panel-view';
+import { useRun } from '@/lib/bridge/use-run';
+import { useStarNudge } from '@/lib/bridge/use-star-nudge';
+import { useStoredFiles } from '@/lib/bridge/use-stored-files';
+import { useStoredRecordings } from '@/lib/bridge/use-stored-recordings';
+import { useStoredSessions } from '@/lib/bridge/use-stored-sessions';
+import { useStoredSkills } from '@/lib/bridge/use-stored-skills';
+import { useStoredTasks } from '@/lib/bridge/use-stored-tasks';
+import { useVoiceComposer } from '@/lib/bridge/use-voice-composer';
+import { useWaitingUpdate } from '@/lib/bridge/use-waiting-update';
+import { useHandsFreeSupported, useVoiceEnabled } from '@/lib/bridge/use-speech';
+import { cn } from '@/lib/utils';
+
+const PINNED_SLACK_PX = 56;
+
+/** Long enough to watch the panel fold into the mic; the panel then closes and the page’s own mic rises. */
+const DETACH_MS = 560;
+
+const DETACH_STUCK_MS = 1_500;
+/** Recordings and schedules run in desktop tabs; the phone conversation has neither. */
+const PHONE_HIDDEN_TABS: PanelTab[] = ['recordings', 'tasks'];
+
+export default function App() {
+  const daemon = useDaemonState();
+  useAutoPair(daemon);
+  const run = useRun();
+  const star = useStarNudge(run.completed, run.sessionId, run.running);
+  const update = useWaitingUpdate();
+  const [voiceEnabled, setVoiceEnabled] = useVoiceEnabled();
+  const [actionCues, setActionCues] = useActionCues();
+  const handsFreeSupported = useHandsFreeSupported();
+  const storedFiles = useStoredFiles();
+  const sessions = useStoredSessions();
+  const recordings = useStoredRecordings();
+  const skills = useStoredSkills();
+  const tasks = useStoredTasks();
+  const [taskSeed, setTaskSeed] = useState<TaskSeed | null>(null);
+  const [scheduling, setScheduling] = useState(false);
+  const takeSeed = useCallback(() => setTaskSeed(null), []);
+  const tabUrl = useActiveTabUrl();
+  const phone = useMirroredPhone();
+  const onPhone = phone !== null;
+  const phoneSwitch = usePhoneSwitch();
+  const androidOption = useMemo(
+    () => (import.meta.env.FIREFOX ? undefined : { on: phoneSwitch.on, problem: phoneSwitch.problem }),
+    [phoneSwitch.on, phoneSwitch.problem],
+  );
+  const handsFree = handsFreeSupported && !onPhone;
+  const pageUrl = phone ? (currentTarget(phone)?.url ?? '') : tabUrl;
+  const blockedHere = useBlockedPattern(pageUrl);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const attachFiles = useAttachFiles(run.attachFile, setAttachError);
+  const [attachedSkill, setAttachedSkill] = useState<AttachedSkill | null>(null);
+  const [focus, setFocus] = useState<FocusedElement | null>(null);
+  const [showTools, setShowTools] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [liveTools, setLiveTools] = useState(false);
+  const [tab, setTab] = usePanelTab();
+  useEffect(() => {
+    if (onPhone && PHONE_HIDDEN_TABS.includes(tab)) setTab('chat');
+  }, [onPhone, tab, setTab]);
+  useEffect(() => {
+    if (!onPhone) return;
+    setScheduling(false);
+    setFocus(null);
+  }, [onPhone]);
+  const [connectionOpen, setConnectionOpen] = useState(false);
+  const [, setCollapsed] = usePanelCollapsed();
+  const viewport = useRef<HTMLDivElement>(null);
+  const windowId = useRef<number | null>(null);
+  const [pinned, setPinned] = useState(true);
+  const [detaching, setDetaching] = useState(false);
+
+  const connected = daemon?.connected ?? false;
+  const files = useMemo(
+    () => storedFiles.filter((file) => file.sessionId !== undefined && file.sessionId === run.sessionId),
+    [storedFiles, run.sessionId],
+  );
+
+  const dragging = useFileDrop({
+    active: connected,
+    onDrop: (dropped) => {
+      open('chat');
+      void attachFiles(dropped);
+    },
+  });
+
+  const voice = useVoiceComposer({
+    active: voiceEnabled && connected && !run.running,
+    onSubmit: (text) => {
+      if (takeCommand(text)) return;
+      run.send(text, { agentSkillId: attachedSkill?.id, focus: focus ?? undefined, liveTools });
+      setAttachedSkill(null);
+      setFocus(null);
+    },
+  });
+
+  const status = describeStatus(daemon, { running: run.running, listening: voice.listening });
+  const starShown = star.raised && tab === 'chat' && !run.running;
+
+  useEffect(() => {
+    if (!connected || daemon?.skillCatalog) return;
+    void browser.runtime.sendMessage({ channel: BRIDGE_CHANNEL, op: 'listSkills' });
+  }, [connected, daemon?.skillCatalog]);
+
+  useEffect(() => {
+    void browser.runtime.sendMessage({ channel: BRIDGE_CHANNEL, op: 'panelOpened' });
+    void browser.windows.getCurrent().then((win) => {
+      windowId.current = win.id ?? null;
+    });
+  }, []);
+
+  useEffect(() => {
+    const element = viewport.current;
+    if (!element) return;
+    const onScroll = () => {
+      const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+      setPinned(distance < PINNED_SLACK_PX);
+    };
+    element.addEventListener('scroll', onScroll, { passive: true });
+    return () => element.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (!pinned || tab !== 'chat') return;
+    const element = viewport.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [run.items, run.running, pinned, tab, starShown]);
+
+  function goToLatest() {
+    const element = viewport.current;
+    if (element) element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    setPinned(true);
+  }
+
+  function open(next: PanelTab) {
+    setConnectionOpen(false);
+    if (next === tab) return;
+    setTab(next);
+    setPinned(next === 'chat');
+    if (viewport.current) viewport.current.scrollTop = 0;
+  }
+
+  function minimize() {
+    setConnectionOpen(false);
+    setCollapsed(true);
+    void closeSidePanel(windowId.current);
+  }
+
+  /**
+   * A side panel cannot be shrunk, only closed, so detaching is a close dressed as a fold: the
+   * panel collapses into a mic at its foot and drops away, and the page’s own mic rises from
+   * the bottom once the panel is gone.
+   */
+  function detach() {
+    if (detaching || !handsFree) return;
+    setConnectionOpen(false);
+    voice.setInput('');
+    setDetaching(true);
+    window.setTimeout(() => {
+      void startHandsFree();
+      void closeSidePanel(windowId.current);
+    }, DETACH_MS);
+    window.setTimeout(() => setDetaching(false), DETACH_MS + DETACH_STUCK_MS);
+  }
+
+  function takeCommand(text: string): boolean {
+    if (handsFree && isHandsFreeCommand(text)) {
+      detach();
+      return true;
+    }
+    if (isAndroidCommand(text)) {
+      voice.setInput('');
+      void phoneSwitch.toggle().then((result) => setAttachError(result.ok ? null : result.error.message));
+      return true;
+    }
+    return false;
+  }
+
+  function handleSend() {
+    if (takeCommand(voice.input)) return;
+    if (!connected) return;
+    if (scheduling) {
+      schedule({ text: voice.input.trim(), url: tabUrl });
+      voice.setInput('');
+      setScheduling(false);
+      return;
+    }
+    if (run.running) return;
+    open('chat');
+    voice.submitNow();
+  }
+
+  function schedule(seed: TaskSeed) {
+    setTaskSeed(seed);
+    open('tasks');
+  }
+
+  function openSession(sessionId: string) {
+    open('chat');
+    void run.restore(sessionId);
+  }
+
+  function watch(sessionId: string) {
+    open('chat');
+    run.focusSession(sessionId);
+  }
+
+  function replayRecording(recording: StoredRecordingMeta) {
+    open('chat');
+    run.send(`Replay my recording “${recording.name}” (id ${recording.id}).`);
+  }
+
+  function mapSite() {
+    open('chat');
+    run.mapSite();
+  }
+
+  async function pointAtElement() {
+    if (picking) return;
+    if (blockedHere) {
+      setAttachError(BLOCKED_HERE);
+      return;
+    }
+    setAttachError(null);
+    setPicking(true);
+    const outcome = await pickFocus();
+    setPicking(false);
+    if ('focus' in outcome) setFocus(outcome.focus);
+    else if ('error' in outcome) setAttachError(`A-Eye couldn’t read that element: ${outcome.error}`);
+  }
+
+  function toggleVoice() {
+    if (!voiceEnabled) {
+      setVoiceEnabled(true);
+      return;
+    }
+    if (voice.error) {
+      voice.retry();
+      return;
+    }
+    setVoiceEnabled(false);
+  }
+
+  const running = run.sessions.filter((session) => session.runId);
+  const runningCount = running.length;
+  const watched = running.find((session) => session.sessionId === run.sessionId) ?? running[0];
+  const offChatRun = runningCount > 0 && tab !== 'chat';
+  const hasBanners = offChatRun || !!run.recording || run.monitors.length > 0 || !!run.draft;
+  const counts = {
+    history: sessions.length,
+    skills: skills.length,
+    recordings: recordings.length,
+    tasks: tasks?.tasks.filter((task) => task.enabled).length ?? 0,
+  };
+
+  return (
+    <div className={cn('relative flex h-screen flex-col', detaching && 'detaching')}>
+      <header className="flex shrink-0 items-center gap-2 px-3 py-2.5">
+        <Wordmark className="flex-1" />
+        <StatusPill
+          tone={status.tone}
+          expanded={connectionOpen}
+          onClick={() => setConnectionOpen((open) => !open)}
+        >
+          {status.label}
+        </StatusPill>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title="New chat"
+          aria-label="Start a new conversation"
+          onClick={() => {
+            open('chat');
+            run.clear();
+          }}
+        >
+          <SquarePen className="size-3.5" />
+        </Button>
+        <PhoneToggle />
+        {handsFree && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Detach — go hands-free with a mic on the page"
+            aria-label="Detach into a hands-free mic on the page"
+            onClick={detach}
+          >
+            <PictureInPicture2 className="size-3.5" />
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title="Settings"
+          aria-label="Open Browsentic settings in a tab"
+          onClick={() => void browser.runtime.openOptionsPage()}
+        >
+          <SlidersHorizontal className="size-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title="Minimize to a rail on the page"
+          aria-label="Minimize to a rail on the page"
+          onClick={minimize}
+        >
+          <PanelRightClose className="size-3.5" />
+        </Button>
+      </header>
+
+      {connectionOpen && <ConnectionSheet onClose={() => setConnectionOpen(false)} />}
+
+      <PanelNav tab={tab} counts={counts} onSelect={open} hidden={onPhone ? PHONE_HIDDEN_TABS : []} />
+
+      <SessionRail
+        sessions={run.sessions}
+        activeSessionId={run.sessionId}
+        onFocus={watch}
+        onEnd={run.endSession}
+      />
+
+      {hasBanners && (
+        <div className="max-h-[45%] shrink-0 overflow-y-auto px-3 pt-2">
+          {offChatRun && watched && (
+            <button
+              type="button"
+              onClick={() => watch(watched.sessionId)}
+              className="enters mb-2 flex w-full items-center gap-2 rounded-xl border border-brand/35 bg-brand/8 px-2.5 py-2 text-left transition-colors hover:bg-brand/12"
+            >
+              <span className="glow-dot size-1.5 shrink-0 animate-pulse rounded-full bg-brand text-brand" />
+              <span className="flex-1 text-xs text-ink">
+                {runningCount === 1 ? 'A run is in progress' : `${runningCount} runs are in progress`}
+              </span>
+              <span className="shrink-0 font-mono text-[10px] tracking-[0.12em] text-brand uppercase">Watch</span>
+            </button>
+          )}
+          {run.recording && !onPhone && <RecordingBar state={run.recording} onStop={run.stopRecording} />}
+          {run.monitors.map((monitor) => (
+            <MonitorBar key={monitor.monitorId} state={monitor} onStop={() => run.stopMonitor(monitor.monitorId)} />
+          ))}
+          {run.draft && <SiteMapReview draft={run.draft} onActivate={run.activateMap} onDiscard={run.discardMap} />}
+        </div>
+      )}
+
+      <div className="relative min-h-0 flex-1">
+        <ScrollArea viewportRef={viewport} className="h-full">
+          {tab === 'chat' ? (
+            run.items.length === 0 ? (
+              <Greeting
+                blocker={status.blocker}
+                hidden={onPhone ? PHONE_HIDDEN_TABS : []}
+                voiceOn={voiceEnabled && voice.supported}
+                onGo={open}
+                onFix={() => setConnectionOpen(true)}
+                onUse={voice.setInput}
+              />
+            ) : (
+              <RunTimeline
+                items={run.items}
+                running={run.running}
+                onDecide={run.decide}
+                onSchedule={onPhone ? undefined : (text) => schedule({ text, url: tabUrl })}
+              />
+            )
+          ) : tab === 'history' ? (
+            <SessionList
+              sessions={sessions}
+              currentId={run.sessionId ?? undefined}
+              busy={run.running}
+              onOpen={openSession}
+              onRemove={(id) => void removeSession(id)}
+            />
+          ) : tab === 'skills' ? (
+            <SkillsPanel tabUrl={tabUrl} connected={connected} onMapSite={mapSite} mapping={run.running} />
+          ) : tab === 'tasks' ? (
+            <TaskPanel
+              tasks={tasks}
+              connected={connected}
+              paired={daemon?.paired ?? false}
+              tabUrl={tabUrl}
+              recordings={recordings}
+              sessions={run.sessions}
+              seed={taskSeed}
+              onSeedTaken={takeSeed}
+              onWatch={watch}
+            />
+          ) : (
+            <RecordingPanel
+              tabUrl={tabUrl}
+              recordings={recordings}
+              recording={run.recording}
+              busy={run.running}
+              onStart={run.startRecording}
+              onStop={run.stopRecording}
+              onReplay={replayRecording}
+              onSchedule={(recording) => schedule({ recordingId: recording.id, name: recording.name, url: recording.startUrl })}
+              onRemove={(id) => void removeRecording(id)}
+            />
+          )}
+          <div className={starShown ? 'h-14' : 'h-3'} />
+        </ScrollArea>
+
+        {tab === 'chat' && !pinned && run.items.length > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            className={cn('enters absolute left-1/2 -translate-x-1/2 backdrop-blur', starShown ? 'bottom-14' : 'bottom-3')}
+            onClick={goToLatest}
+          >
+            <ArrowDown className="size-3" /> Latest
+          </Button>
+        )}
+
+        {starShown && <StarBadge onStar={star.star} onClose={star.close} />}
+      </div>
+
+      {showTools && (
+        <SavedToolList
+          tools={run.tools}
+          autoRunReady={run.autoRunReady}
+          everyVisit={!onPhone}
+          onAutoRun={run.setAutoRun}
+          onForget={run.forgetTool}
+          onClose={() => setShowTools(false)}
+        />
+      )}
+
+      {tab === 'chat' && (
+        <footer className="shrink-0 border-t border-line p-3">
+          {update.version && runningCount === 0 && !run.recording && (
+            <UpdatePill version={update.version} onUpdate={update.restart} onLater={update.later} />
+          )}
+          {blockedHere && <BlockedSiteNote pattern={blockedHere} />}
+          {run.toolOffer && (
+            <KeepToolPrompt
+              offer={run.toolOffer}
+              autoRunReady={run.autoRunReady}
+              everyVisit={!onPhone}
+              onKeep={run.keepTool}
+              onDismiss={run.dismissTool}
+            />
+          )}
+          <Composer
+            voice={voice}
+            voiceEnabled={voiceEnabled}
+            connected={connected}
+            running={run.running}
+            files={files}
+            attachError={attachError}
+            catalog={daemon?.skillCatalog}
+            tabUrl={pageUrl}
+            attachedSkill={attachedSkill}
+            focus={focus}
+            picking={picking}
+            liveTools={liveTools}
+            onToggleLiveTools={() => setLiveTools((on) => !on)}
+            scheduling={scheduling}
+            onToggleScheduling={() => setScheduling((on) => !on)}
+            actionCues={actionCues}
+            onToggleActionCues={() => setActionCues(!actionCues)}
+            onAttachSkill={setAttachedSkill}
+            handsFree={handsFree}
+            android={androidOption}
+            onPhone={onPhone}
+            onCommand={(command) => {
+              if (takeCommand(command)) return;
+              if (isRemoveToolsCommand(command)) {
+                setShowTools(true);
+                return;
+              }
+              open('chat');
+              run.send(command);
+            }}
+            tools={run.tools}
+            onRunTool={(id) => {
+              open('chat');
+              run.runTool(id);
+            }}
+            onSend={handleSend}
+            onStop={run.cancel}
+            onToggleVoice={toggleVoice}
+            onPick={() => void pointAtElement()}
+            onClearFocus={() => setFocus(null)}
+            onAttachFile={(file) => void attachFiles([file])}
+            onRemoveFile={run.detachFile}
+            onRetryFile={run.reanalyzeFile}
+          />
+        </footer>
+      )}
+
+      {dragging && <DropMask connected={connected} maxBytes={MAX_STORED_FILE_BYTES} />}
+      {detaching && <DetachVeil />}
+    </div>
+  );
+}

@@ -1,0 +1,923 @@
+import { randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
+import {
+  failure,
+  success,
+  type ActionResult,
+  type FocusedElement,
+  type SavedRecording,
+  type ExtensionRequest,
+  type RunContext,
+  type RunEvent,
+} from '@/lib/actions/protocol';
+import { awaitMonitor } from '@/lib/actions/page/await-monitor';
+import { callSiteTool } from '@/lib/actions/page/call-site-tool';
+import { captureDownload } from '@/lib/actions/page/capture-download';
+import { openTab } from '@/lib/actions/page/open-tab';
+import { pickElement } from '@/lib/actions/page/pick-element';
+import { runCode } from '@/lib/actions/page/run-code';
+import { solveCaptcha } from '@/lib/actions/page/solve-captcha';
+import { waitForElement } from '@/lib/actions/page/wait-for-element';
+import { notOnPhone, phoneOffers } from '@/lib/phone/features';
+import { FOCUS_SHOT_ACTION, READ_SITEMAP_ACTION } from '@/lib/actions/reserved';
+import { agentRunToolNames, toolNameFor } from '@/lib/actions/tool-names';
+import type { FileReport } from '@/lib/files/report';
+import { TASK_APPROVAL_WAIT_MS, TASK_RUN_MAX_MS } from '@/lib/schedules/task';
+import { activeRunner, AGENTS, needsNewerExtension, type AgentKind } from '@/lib/agents/catalog';
+import { SAVE_SITE_MAP_ACTION, SITE_MAPPER_SKILL, validateSiteMapReport } from '@/lib/skills/site-map';
+import {
+  blocked,
+  CAPTCHA_ACTION,
+  decide,
+  declined,
+  describe as describeDecision,
+  INJECT_ACTION,
+  normalizeHost,
+  RUN_CODE_ACTION,
+  policyFrom,
+  scopeFor,
+  sealSecrets,
+  summary as summarizeDecision,
+  unanswered,
+  type Policy,
+  type Scope,
+} from '../guardrails';
+import type { ToolDelivery } from '../control';
+import { log } from '../log';
+import { readProfile } from '../profile';
+import { grouped } from '../tool-groups';
+import { resolveAgentSkill } from './agent-skills';
+import { isGranted, rememberGrant } from './approvals';
+import { maxConcurrentRuns, readAgentConfig, siteMapSettings, type AgentConfig } from './config';
+import { gateMappingInvoke, noteMappingResult, type MapRun } from './mapping';
+import { handOver, type Handover } from './attachments';
+import { buildSystemPrompt, phoneBlock, profileBlock, promptUpdate, scheduledBlock, turnMessage, type BuiltPrompt, type PromptSection } from './prompt';
+import { RunError, runInstruction } from './runner';
+import { agentState, RUNNERS } from './runners';
+import type { CallLimits } from './runners/types';
+import {
+  discardStaging,
+  mapTargetFor,
+  prepareStaging,
+  stageSiteMap,
+  stagedScreenshots,
+  sweepStaging,
+  writeEvidence,
+} from './site-map-store';
+import { fetchSiteIndex, type SiteIndex } from './sitemap';
+import { loadSkills, routeSkill, skillDirNames, type Skill } from './skills';
+
+export interface AgentSessionDeps {
+  invoke: (
+    action: string,
+    input?: unknown,
+    opts?: { saveTo?: { dir: string; filename: string }; tabId?: number; runId?: string; hosts?: readonly string[] },
+  ) => Promise<ActionResult>;
+  emit: (runId: string, event: RunEvent) => void;
+  draft: (runId: string, draft: import('@/lib/skills/site-map').SiteMapDraft) => void;
+  /** Runs going in every connected browser: the limit bounds agent processes on the machine. */
+  running?: () => number;
+  /** The page actions on offer right now — the extension's list once it has drifted from the bundled one. */
+  actionNames: () => string[];
+  /** The report on a file the analyst is still reading, or null when nothing is reading it. */
+  awaitAnalysis?: (fileId: string, signal: AbortSignal) => Promise<FileReport | null>;
+  /** Whether the panel asking knows this agent; one too old for it is refused rather than sent it. */
+  knowsAgent?: (kind: AgentKind) => boolean;
+}
+
+interface ActiveRun {
+  id: string;
+  /** The tab-bound conversation this run belongs to; one run at a time per session. */
+  sessionId?: string;
+  config: AgentConfig;
+  policy: Policy;
+  scope: Scope;
+  abort: AbortController;
+  pending: Map<string, (answer: Decision) => void>;
+  /** Tabs this run opened itself, which its own scope may therefore reach. */
+  ownedTabIds: number[];
+  /** Host of the tab this run started on — what "this site" means on an approval card. */
+  site?: string;
+  map?: MapRun;
+  /** The A-Eye pick photographed when the user attached it to this instruction. */
+  focusShot?: string;
+  /** The composer's “Live tool” switch, as it stood when this instruction was sent. */
+  liveTools: boolean;
+  /** It drives Chrome on an Android phone, which is offered only the tools that work there. */
+  phone: boolean;
+  /** Actions the user allowed once in this run that stay allowed for the rest of it. */
+  approved: Set<string>;
+  /** A schedule started it: an approval nobody answers is declined rather than awaited forever. */
+  scheduled: boolean;
+  /** What the agent's CLI does to a tool call, which every call of this run has to fit inside. */
+  limits?: CallLimits;
+  /** An approval still on the user's screen after its call was handed back, until the agent calls again. */
+  parked?: Waiting;
+  /** Settles when the run's MCP server first lists its tools to the agent. */
+  listed: Promise<void>;
+  markListed: () => void;
+}
+
+const FOCUS_SHOT_TOOL_NAME = toolNameFor(FOCUS_SHOT_ACTION);
+
+/** Getting past a captcha takes a call per round; one yes covers every round of that run. */
+const HELD_FOR_RUN = new Set([CAPTCHA_ACTION]);
+
+/** Actions whose `timeoutMs` is how long the call itself waits, not how long something runs after it. */
+const WAITS = [awaitMonitor, pickElement, solveCaptcha, waitForElement, runCode, callSiteTool, captureDownload];
+
+/** How long before a CLI abandons a call it is answered: the result still has to cross two processes. */
+const CALL_MARGIN_MS = 10_000;
+
+/** The least a wait is cut to, which every waiting action accepts. */
+const SHORTEST_WAIT_MS = 5_000;
+
+interface Decision {
+  allow: boolean;
+  remember?: boolean;
+  unanswered?: boolean;
+  /** The call was abandoned, or the agent moved on, before the user answered. */
+  withdrawn?: boolean;
+}
+
+/** A call waiting on the user's approval. */
+interface Waiting {
+  key: string;
+  toolId: string;
+  action: string;
+  input: unknown;
+  /** Why it needs approval, for the log. */
+  why: string;
+  decision: Promise<Decision>;
+}
+
+const deliveryFor = (config: AgentConfig): ToolDelivery => RUNNERS[config.agent].delivery?.(config.agents[config.agent]) ?? 'listed';
+
+export class AgentSession {
+  /**
+   * Per session, the conversation its agent is holding open, and the prompt that conversation was last
+   * brought up to date with. Switching agents drops them all.
+   */
+  private held = new Map<string, { agent: AgentKind; sessionId: string; sections: PromptSection[] }>();
+  private runs = new Map<string, ActiveRun>();
+  /**
+   * Conversations that have been shown the page-code tools. The tool list leads the
+   * prefix an agent caches, so it may grow once within a conversation and never shrink:
+   * a follow-up lands while the cache is warm, and a changed list re-bills its history.
+   */
+  private codeListed = new Set<string>();
+
+  constructor(private readonly deps: AgentSessionDeps) {}
+
+  handle(request: ExtensionRequest): void {
+    switch (request.t) {
+      case 'instruct':
+        void this.start(request.id, request.text, request.context);
+        return;
+      case 'cancel':
+        this.cancel(request.id);
+        return;
+      case 'decision':
+        this.runs.get(request.id)?.pending.get(request.toolId)?.({
+          allow: request.allow,
+          remember: request.remember,
+        });
+        return;
+      case 'reset':
+        if (request.sessionId) {
+          this.held.delete(request.sessionId);
+          this.codeListed.delete(request.sessionId);
+        } else {
+          this.held.clear();
+          this.codeListed.clear();
+        }
+        log(request.sessionId ? `agent conversation reset for session ${request.sessionId}` : 'agent conversations reset');
+        return;
+    }
+  }
+
+  get running(): number {
+    return this.runs.size;
+  }
+
+  owns(runId: string): boolean {
+    return this.runs.has(runId);
+  }
+
+  /** The run's MCP server has just been told what its tools are, which a CLI that does not wait for them needs to know. */
+  described(runId: string): void {
+    this.runs.get(runId)?.markListed();
+  }
+
+  /**
+   * What a run's tool list should hold. A tool the run would only be refused is left
+   * out: its schema is re-sent on every turn, and listing it invites the call.
+   */
+  offerFor(runId: string): { withheld: string[]; reserved: string[]; onDemand: string[]; delivery: ToolDelivery } | null {
+    const run = this.runs.get(runId);
+    if (!run) return null;
+    const codeListed = run.liveTools || (run.sessionId !== undefined && this.codeListed.has(run.sessionId));
+    const codeWithheld = codeListed ? [] : [INJECT_ACTION, RUN_CODE_ACTION];
+    const delivery = deliveryFor(run.config);
+    const offered = (withheld: string[]) => this.onDemand(run).filter((name) => !withheld.includes(name));
+    if (run.phone) {
+      const offPhone = this.deps.actionNames().filter((name) => !phoneOffers(name));
+      const withheld = [...new Set([...offPhone, ...codeWithheld])];
+      return { withheld, reserved: [FOCUS_SHOT_ACTION], onDemand: offered(withheld), delivery };
+    }
+    return {
+      withheld: codeWithheld,
+      // A mapping run never resumes a conversation, so its tool can come and go. A pick
+      // comes and goes between the messages of one, so the tool that shows it stays.
+      reserved: [...(run.map ? [SAVE_SITE_MAP_ACTION] : []), FOCUS_SHOT_ACTION],
+      onDemand: offered(codeWithheld),
+      delivery,
+    };
+  }
+
+  /** The grouped actions a run does not list, when its CLI would otherwise send their schemas on every turn. */
+  private onDemand(run: ActiveRun): string[] {
+    return deliveryFor(run.config) === 'listed' ? [] : this.deps.actionNames().filter(grouped);
+  }
+
+  /** `signal` aborts when the caller stops waiting for this call, so nothing it asked for outlives it. */
+  async invokeForRun(runId: string, action: string, input?: unknown, signal?: AbortSignal): Promise<ActionResult> {
+    const run = this.runs.get(runId);
+    if (!run) {
+      return failure('RUN_INACTIVE', 'This agent run is no longer active');
+    }
+    const startedAt = Date.now();
+    const emit = (event: RunEvent) => this.deps.emit(runId, event);
+    const key = callKey(action, input);
+    const parked = run.parked;
+    if (parked?.key === key) {
+      run.parked = undefined;
+      log(`agent run ${runId} is back for ${action}, still waiting on the user`);
+      return this.answered(run, parked, signal, startedAt);
+    }
+    this.withdraw(run);
+
+    const toolId = randomUUID();
+    emit({ kind: 'tool', toolId, action, input });
+
+    if (action === SAVE_SITE_MAP_ACTION) {
+      if (!run.map) {
+        emit({ kind: 'toolResult', toolId, ok: false, summary: 'not a mapping run' });
+        return failure('UNKNOWN_ACTION', `Unknown action "${action}".`);
+      }
+      const result = this.submitSiteMap(run, input);
+      emit({ kind: 'toolResult', toolId, ok: result.ok, summary: summarize(input, result) });
+      return result;
+    }
+
+    if (action === FOCUS_SHOT_ACTION) {
+      const result = run.focusShot
+        ? success({ dataUrl: run.focusShot })
+        : failure('NO_FOCUS_SHOT', 'No A-Eye pick came with this instruction, so nothing was photographed.');
+      emit({
+        kind: 'toolResult',
+        toolId,
+        ok: result.ok,
+        summary: result.ok ? 'the picked element, as photographed' : 'no pick attached',
+      });
+      return result;
+    }
+
+    if (run.phone && !phoneOffers(action)) {
+      emit({ kind: 'toolResult', toolId, ok: false, summary: 'not available on the phone' });
+      return failure('NOT_ON_PHONE', notOnPhone(action));
+    }
+
+    if (!run.liveTools && (action === INJECT_ACTION || action === RUN_CODE_ACTION)) {
+      emit({ kind: 'toolResult', toolId, ok: false, summary: 'live tools are switched off' });
+      return failure(
+        'LIVE_TOOLS_OFF',
+        'Writing and running your own page code is switched off for this message. The user turns it on with the “Live tool” switch beside the message box, and only they can. Do the job with the ordinary page tools, or say that this one needs that switch and why.',
+      );
+    }
+
+    if (run.map) {
+      const gate = gateMappingInvoke(run.map, action, input);
+      if (!gate.allow) {
+        log(`mapping run ${runId} refused ${action}: ${gate.result.ok ? '' : gate.result.error.code}`);
+        emit({ kind: 'toolResult', toolId, ok: false, summary: summarize(input, gate.result) });
+        return gate.result;
+      }
+      const result = await this.deps.invoke(action, this.withinCall(run, action, input, startedAt), {
+        saveTo: gate.saveTo,
+        tabId: run.map.tabId,
+      });
+      noteMappingResult(run.map, action, result);
+      log(`agent → ${action} ${result.ok ? 'ok' : result.error.code}`);
+      emit({ kind: 'toolResult', toolId, ok: result.ok, summary: summarize(input, result) });
+      return result;
+    }
+
+    const scope = run.ownedTabIds.length ? { ...run.scope, ownedTabIds: run.ownedTabIds } : run.scope;
+    const decision = decide({ action, input, caller: 'agent', scope }, run.policy);
+    if (decision.effect === 'deny') {
+      log(`agent run ${runId} blocked ${action}: ${describeDecision(decision)}`);
+      emit({ kind: 'toolResult', toolId, ok: false, summary: `blocked: ${summarizeDecision(decision)}` });
+      return blocked(decision);
+    }
+    if (decision.effect === 'confirm' && !(run.site && isGranted(action, run.site)) && !run.approved.has(action)) {
+      emit({ kind: 'approval', toolId, action, input, site: run.site });
+      const waiting = { key, toolId, action, input, why: describeDecision(decision), decision: this.awaitDecision(run, toolId) };
+      return this.answered(run, waiting, signal, startedAt);
+    }
+    return this.perform(run, toolId, action, input, startedAt);
+  }
+
+  /**
+   * Acts on the user's answer to an approval — or, when the CLI would abandon the call before they
+   * give one, hands the call back with the request left on their screen, for the agent to call again.
+   */
+  private async answered(run: ActiveRun, waiting: Waiting, signal: AbortSignal | undefined, startedAt: number): Promise<ActionResult> {
+    const { toolId, action, why } = waiting;
+    const emit = (event: RunEvent) => this.deps.emit(run.id, event);
+    const answer = await this.answerWithin(run, waiting, signal, startedAt);
+    if (answer === 'parked') {
+      run.parked = waiting;
+      log(`agent run ${run.id} handed ${action} back unanswered, before its CLI stops waiting`);
+      return failure(
+        'APPROVAL_PENDING',
+        'The user has not answered yet, and the request is still on their screen. Make this same call again, with the same input, ' +
+          'to keep waiting for their answer. Any other call withdraws the request.',
+      );
+    }
+    if (answer.withdrawn) {
+      log(`agent run ${run.id} stopped waiting on ${action}: ${why}`);
+      emit({ kind: 'toolResult', toolId, ok: false, summary: 'the agent stopped waiting' });
+      return failure('CANCELLED', 'The call was abandoned before the user answered.');
+    }
+    if (answer.unanswered) {
+      log(`agent run ${run.id} got no answer on ${action}: ${why}`);
+      emit({ kind: 'toolResult', toolId, ok: false, summary: 'nobody answered in time' });
+      return unanswered();
+    }
+    if (!answer.allow) {
+      log(`agent run ${run.id} declined ${action}: ${why}`);
+      emit({ kind: 'toolResult', toolId, ok: false, summary: 'declined by the user' });
+      return declined();
+    }
+    if (answer.remember && run.site) rememberGrant(action, run.site, new Date().toISOString());
+    if (HELD_FOR_RUN.has(action)) run.approved.add(action);
+    return this.perform(run, toolId, action, waiting.input, startedAt);
+  }
+
+  private async perform(run: ActiveRun, toolId: string, action: string, input: unknown, startedAt: number): Promise<ActionResult> {
+    const scope = run.ownedTabIds.length ? { ...run.scope, ownedTabIds: run.ownedTabIds } : run.scope;
+    const result = await this.deps.invoke(action, this.withinCall(run, action, input, startedAt), { runId: run.id, hosts: scope.hosts });
+    if (action === openTab.name && result.ok) {
+      const opened = (result.data as { tabId?: unknown } | null)?.tabId;
+      if (typeof opened === 'number') run.ownedTabIds.push(opened);
+    }
+    log(`agent → ${action} ${result.ok ? 'ok' : result.error.code}`);
+    this.deps.emit(run.id, { kind: 'toolResult', toolId, ok: result.ok, summary: summarize(input, result) });
+    return result;
+  }
+
+  /** The user's answer, or `parked` once the call is about to outlast what the CLI will wait for one. */
+  private answerWithin(run: ActiveRun, waiting: Waiting, signal: AbortSignal | undefined, startedAt: number): Promise<Decision | 'parked'> {
+    const callMs = run.limits?.callMs;
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const abandon = () => run.pending.get(waiting.toolId)?.({ allow: false, withdrawn: true });
+      const finish = (answer: Decision | 'parked') => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abandon);
+        resolve(answer);
+      };
+      void waiting.decision.then(finish);
+      if (callMs !== undefined) timer = setTimeout(() => finish('parked'), Math.max(callMs - CALL_MARGIN_MS - (Date.now() - startedAt), 0));
+      if (signal?.aborted) abandon();
+      else signal?.addEventListener('abort', abandon, { once: true });
+    });
+  }
+
+  /** A parked request the agent did not come back for leaves the user's screen, and a late yes does nothing. */
+  private withdraw(run: ActiveRun): void {
+    const parked = run.parked;
+    if (!parked) return;
+    run.parked = undefined;
+    run.pending.get(parked.toolId)?.({ allow: false, withdrawn: true });
+    log(`agent run ${run.id} withdrew its request for ${parked.action}`);
+    this.deps.emit(run.id, { kind: 'toolResult', toolId: parked.toolId, ok: false, summary: 'the agent stopped waiting' });
+  }
+
+  /** The input, with a wait cut short enough that the call ends before the CLI abandons it. */
+  private withinCall(run: ActiveRun, action: string, input: unknown, startedAt: number): unknown {
+    const callMs = run.limits?.callMs;
+    const waits = WAITS.find((candidate) => candidate.name === action);
+    if (callMs === undefined || !waits) return input;
+    const parsed = waits.input.safeParse(input ?? {});
+    if (!parsed.success) return input;
+    const left = Math.max(callMs - CALL_MARGIN_MS - (Date.now() - startedAt), SHORTEST_WAIT_MS);
+    return (parsed.data as { timeoutMs: number }).timeoutMs <= left ? input : { ...(input as object), timeoutMs: left };
+  }
+
+  dispose(): void {
+    for (const runId of [...this.runs.keys()]) this.cancel(runId);
+    this.held.clear();
+    this.codeListed.clear();
+  }
+
+  private async start(runId: string, instruction: string, context?: RunContext): Promise<void> {
+    const emit = (event: RunEvent) => this.deps.emit(runId, event);
+
+    const text = instruction.trim();
+    if (!text) return emit({ kind: 'error', code: 'INVALID_INPUT', message: 'Say what you want done.' });
+
+    const sessionId = context?.sessionId;
+    const clashes = sessionId
+      ? [...this.runs.values()].some((run) => run.sessionId === sessionId)
+      : this.runs.size > 0;
+    if (clashes) {
+      return emit({
+        kind: 'error',
+        code: 'RUN_IN_PROGRESS',
+        message: 'This conversation is still running — cancel it first.',
+      });
+    }
+
+    const routed = routeSkill(loadSkills(), text, context);
+    if (!routed) {
+      return emit({
+        kind: 'error',
+        code: 'NO_SKILL',
+        message: `No skills found. Looked in ${skillDirNames().join(' and ')} — reinstall the package, or add a skill of your own.`,
+      });
+    }
+
+    const config = readAgentConfig();
+    if (this.deps.knowsAgent?.(config.agent) === false) {
+      return emit({ kind: 'error', code: 'AGENT_UNUSABLE', message: needsNewerExtension(config.agent) });
+    }
+    const limit = maxConcurrentRuns(config);
+    if ((this.deps.running?.() ?? this.runs.size) >= limit) {
+      return emit({
+        kind: 'error',
+        code: 'RUN_LIMIT',
+        message: `${limit} runs are already going — let one finish, or stop it, before starting another.`,
+      });
+    }
+    const mapping = routed.base.name === SITE_MAPPER_SKILL && routed.base.source === 'bundled';
+    if (mapping && !explicitlyAsked(text)) {
+      return emit({
+        kind: 'error',
+        code: 'MAPPING_NOT_REQUESTED',
+        message:
+          'Mapping a site takes several minutes and drives this tab. Ask for it explicitly with the Map this site button, or by starting your message with @site-mapper.',
+      });
+    }
+
+    let attached: { name: string; body: string } | undefined;
+    if (context?.agentSkillId) {
+      if (mapping) {
+        log(`agent run ${runId}: ignoring the attached agent skill — mapping runs build their own prompt`);
+      } else {
+        const resolved = resolveAgentSkill(context.agentSkillId, config);
+        if ('error' in resolved) return emit({ kind: 'error', ...resolved.error });
+        attached = resolved.skill;
+      }
+    }
+
+    const overlayNames = routed.overlays.map((overlay) => overlay.name);
+    const policy = policyFrom(config.guardrails, config.requireApproval);
+    const scope = scopeFor({
+      url: context?.url,
+      tabId: context?.tabId,
+      instruction: text,
+      extraHosts: config.guardrails?.hosts,
+      pinTab: true,
+    });
+    let markListed = () => {};
+    const listed = new Promise<void>((resolve) => (markListed = resolve));
+    const run: ActiveRun = {
+      id: runId,
+      sessionId,
+      config,
+      policy,
+      scope,
+      site: siteOf(context?.url),
+      abort: new AbortController(),
+      pending: new Map(),
+      ownedTabIds: [],
+      focusShot: context?.focus?.shot,
+      liveTools: context?.liveTools === true,
+      phone: context?.phone !== undefined,
+      approved: new Set(),
+      scheduled: context?.task !== undefined,
+      limits: RUNNERS[config.agent].limits,
+      listed,
+      markListed,
+    };
+    this.runs.set(runId, run);
+    if (run.liveTools && sessionId) this.codeListed.add(sessionId);
+
+    // Claim the slot before probing, so a second instruction still meets RUN_IN_PROGRESS.
+    const runner = activeRunner(await agentState(config));
+    if (!runner?.ready) {
+      const problem = runner?.problem;
+      this.release(run);
+      log(`agent run ${runId} refused: ${AGENTS[config.agent].label} is not ready`);
+      return emit({
+        kind: 'error',
+        code: problem?.code ?? 'AGENT_MISSING',
+        message: `${AGENTS[config.agent].label} cannot run. ${problem?.message ?? 'It is not available.'}${problem?.fix ? ` ${problem.fix}` : ''}`,
+      });
+    }
+
+    const holding = sessionId ? this.held.get(sessionId) : undefined;
+    const held = holding?.agent === config.agent ? holding.sessionId : null;
+    const supplied = mapping ? null : sessionFrom(context, config.agent);
+    const resuming = mapping ? null : (supplied ?? held);
+
+    let built: BuiltPrompt;
+    let instructionText = routed.text;
+    let handover: Handover = { handed: [] };
+    try {
+      if (mapping) {
+        const prepared = await this.prepareMapping(run, routed.base, context, emit);
+        if (!prepared) return;
+        built = prepared.built;
+        instructionText = prepared.instruction;
+      } else {
+        // A session that is not being resumed has been handed nothing, whatever the browser recorded.
+        const files = resuming ? context?.files : context?.files?.map((file) => ({ ...file, delivered: false }));
+        handover = await handOver(files, {
+          agent: config.agent,
+          signal: run.abort.signal,
+          emit,
+          wait: (fileId, signal) => this.deps.awaitAnalysis?.(fileId, signal) ?? Promise.resolve(null),
+        });
+        const profile = readProfile();
+        built = buildSystemPrompt(routed.base, routed.overlays, {
+          instructions: profile.instructions,
+          profile: profileBlock(profile),
+          attached,
+          focus: focusBlock(context?.focus),
+          attachments: handover.known,
+          recordings: recordingsBlock(context?.recordings),
+          scheduled: scheduledBlock(context?.task),
+          phone: phoneBlock(context?.phone),
+        });
+        // The CLI sends the prompt its session began with, so what has changed since goes in the message.
+        const update =
+          resuming && RUNNERS[config.agent].keepsFirstPrompt
+            ? promptUpdate(holding?.agent === config.agent && holding.sessionId === resuming ? holding.sections : undefined, built)
+            : undefined;
+        if (update) log(`agent run ${runId} brings its session's prompt up to date: ${update.changed.join(', ')}`);
+        instructionText = turnMessage(routed.text, { update: update?.text, reports: handover.reports });
+      }
+    } catch (error) {
+      this.release(run);
+      return emit({ kind: 'error', code: 'AGENT_FAILED', message: String(error) });
+    }
+
+    if (run.abort.signal.aborted) {
+      if (run.map) discardStaging(run.map.staging.id);
+      this.release(run);
+      log(`agent run ${runId} was cancelled before it started`);
+      return emit({ kind: 'error', code: 'CANCELLED', message: 'Run cancelled.' });
+    }
+
+    const applied = attached && !built.dropped.includes(attached.name) ? attached.name : undefined;
+    log(
+      `agent run ${runId} started with skill "${routed.base.name}"` +
+        (applied ? ` + attached "${applied}"` : '') +
+        (overlayNames.length ? ` + site notes [${overlayNames.join(', ')}]` : '') +
+        (run.map ? ` mapping ${run.map.target.host}` : ''),
+    );
+    emit({ kind: 'started', skill: routed.base.name, attached: applied, overlays: [...overlayNames, ...built.dropped.map((n) => `${n} (too large — not applied)`)] });
+    if (handover.handed.length) {
+      log(`agent run ${runId} carries ${handover.handed.length} file report(s)`);
+      emit({ kind: 'attachments', files: handover.handed });
+    }
+
+    const allowance = run.map ? run.map.settings.timeoutMs : run.scheduled ? TASK_RUN_MAX_MS : undefined;
+    const budget = allowance ? setTimeout(() => run.abort.abort(), allowance) : undefined;
+    const onDemand = this.onDemand(run);
+
+    try {
+      const outcome = await runInstruction({
+        runId,
+        conversation: sessionId ?? null,
+        instruction: instructionText,
+        systemPrompt: built.prompt,
+        research: run.map ? run.map.settings.research : false,
+        config: run.config,
+        sessionId: resuming,
+        mcpTools: agentRunToolNames(this.deps.actionNames().filter((name) => !onDemand.includes(name))),
+        toolsListed: () => run.listed,
+        version: runner.version,
+        signal: run.abort.signal,
+        emit,
+      });
+      this.withdraw(run);
+      if (!mapping) {
+        if (sessionId) {
+          if (outcome.sessionId) {
+            this.held.set(sessionId, { agent: config.agent, sessionId: outcome.sessionId, sections: built.sections });
+          } else {
+            this.held.delete(sessionId);
+          }
+        }
+        if (outcome.sessionId !== resuming) {
+          emit({ kind: 'session', agent: config.agent, agentSessionId: outcome.sessionId });
+        }
+      }
+      log(`agent run ${runId} finished (${outcome.stopReason})`);
+      emit({ kind: 'done', stopReason: outcome.stopReason });
+    } catch (error) {
+      this.withdraw(run);
+      const { code, message } = error instanceof RunError ? error : new RunError('AGENT_FAILED', String(error));
+      log(`agent run ${runId} failed: ${code}: ${message}`);
+      emit({ kind: 'error', code, message });
+    } finally {
+      clearTimeout(budget);
+      if (run.map && !run.map.submitted) discardStaging(run.map.staging.id);
+      this.release(run);
+    }
+  }
+
+  private release(run: ActiveRun): void {
+    if (this.runs.get(run.id) === run) this.runs.delete(run.id);
+  }
+
+  private async prepareMapping(
+    run: ActiveRun,
+    skill: Skill,
+    context: RunContext | undefined,
+    emit: (event: RunEvent) => void,
+  ): Promise<{ built: BuiltPrompt; instruction: string } | null> {
+    if (!context?.url) {
+      this.release(run);
+      emit({ kind: 'error', code: 'INVALID_INPUT', message: 'Open the site you want mapped in this tab first.' });
+      return null;
+    }
+    const target = mapTargetFor(context.url);
+    if (!target.ok) {
+      this.release(run);
+      emit({ kind: 'error', code: 'MAPPING_REFUSED', message: target.message });
+      return null;
+    }
+
+    sweepStaging();
+    const settings = siteMapSettings(run.config);
+    const staging = prepareStaging();
+
+    const toolId = randomUUID();
+    emit({ kind: 'tool', toolId, action: READ_SITEMAP_ACTION, input: { origin: target.target.origin } });
+    let index: SiteIndex;
+    try {
+      index = await fetchSiteIndex(target.target.origin, run.abort.signal);
+    } catch (error) {
+      log('sitemap phase failed', error);
+      index = { source: 'none', documents: 0, urlCount: 0, truncated: false, paths: [], patterns: [], raw: '' };
+    }
+    emit({
+      kind: 'toolResult',
+      toolId,
+      ok: true,
+      summary: index.urlCount ? `${index.urlCount} URLs from ${index.source}` : 'no sitemap published',
+    });
+    writeEvidence(staging, 'sitemap.txt', index.raw);
+
+    run.map = {
+      target: target.target,
+      staging,
+      index,
+      settings,
+      tabId: context.tabId,
+      shots: 0,
+      pagesVisited: new Set(),
+      offSite: null,
+      submitted: false,
+    };
+
+    const built = buildSystemPrompt(skill, [], { fetched: fetchedBlock(target.target.origin, index) });
+    return { built, instruction: mappingBrief(target.target.host, settings) };
+  }
+
+  private submitSiteMap(run: ActiveRun, input: unknown): ActionResult {
+    const map = run.map!;
+    if (map.submitted) return failure('ALREADY_SUBMITTED', 'This run has already written its map.');
+
+    const raw = (input as { report?: unknown } | undefined)?.report;
+    if (JSON.stringify(raw ?? null).length > 256 * 1024) {
+      return failure('MAPPING_REPORT_TOO_LARGE', 'That report is far too large. Summarize each page in a sentence.');
+    }
+    const checked = validateSiteMapReport(raw, {
+      origin: map.target.origin,
+      screenshots: stagedScreenshots(map.staging),
+    });
+    if (!checked.ok) return failure('INVALID_INPUT', checked.message);
+
+    const draft = stageSiteMap({
+      staging: map.staging,
+      target: map.target,
+      report: checked.report,
+      index: map.index,
+      background: null,
+      warnings: checked.warnings,
+      runId: run.id,
+    });
+    map.submitted = true;
+    this.deps.draft(run.id, draft);
+    log(`mapping run ${run.id} staged ${draft.name} (${draft.pages} pages, ${draft.screenshots} shots)`);
+    return success({
+      staged: true,
+      name: draft.name,
+      pages: draft.pages,
+      message: 'The map is written and waiting for the user to review it. Tell them what you found, briefly.',
+    });
+  }
+
+  private cancel(runId: string): void {
+    const cancelled = this.runs.get(runId);
+    if (!cancelled) {
+      log(`cancel for run ${runId}, which is not running`);
+      this.deps.emit(runId, { kind: 'done', stopReason: 'cancelled' });
+      return;
+    }
+    this.withdraw(cancelled);
+    for (const [, settle] of cancelled.pending) settle({ allow: false });
+    cancelled.pending.clear();
+    cancelled.abort.abort();
+    this.runs.delete(runId);
+    log(`agent run ${runId} cancelled`);
+  }
+
+  private awaitDecision(run: ActiveRun, toolId: string): Promise<Decision> {
+    if (run.abort.signal.aborted) return Promise.resolve({ allow: false });
+    return new Promise((resolve) => {
+      let expiry: ReturnType<typeof setTimeout> | undefined;
+      const settle = (answer: Decision) => {
+        clearTimeout(expiry);
+        run.pending.delete(toolId);
+        resolve(answer);
+      };
+      if (run.scheduled) expiry = setTimeout(() => settle({ allow: false, unanswered: true }), TASK_APPROVAL_WAIT_MS);
+      run.pending.set(toolId, settle);
+      run.abort.signal.addEventListener('abort', () => settle({ allow: false }), { once: true });
+    });
+  }
+}
+
+/** Two calls are the same call when they name the same action with the same input, in whatever key order. */
+function callKey(action: string, input: unknown): string {
+  return `${action}\u0000${JSON.stringify(sortedKeys(input) ?? null)}`;
+}
+
+function sortedKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedKeys);
+  if (!value || typeof value !== 'object') return value;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(record).sort().map((key) => [key, sortedKeys(record[key])]));
+}
+
+function siteOf(url?: string): string | undefined {
+  if (!url) return undefined;
+  try {
+    return normalizeHost(new URL(url).hostname) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function explicitlyAsked(text: string): boolean {
+  return /^@site-mapper\b/i.test(text.trim());
+}
+
+const MAX_FOCUS_CONTENT = 6 * 1024;
+
+function focusBlock(focus: FocusedElement | undefined): string | undefined {
+  if (!focus) return undefined;
+  const lines = [
+    `- Selector: \`${flatten(focus.selector)}\``,
+    `- Element: \`<${flatten(focus.tag)}>\`${focus.role ? `, role \`${flatten(focus.role)}\`` : ''}`,
+  ];
+  if (focus.label) lines.push(`- Label: ${flatten(focus.label)}`);
+  lines.push(`- On: ${flatten(focus.title)} — ${flatten(focus.url)}`);
+  if (focus.shot) {
+    lines.push(
+      `- A screenshot of it, taken at the instant they picked it, is attached — call \`${FOCUS_SHOT_TOOL_NAME}\` once to see it.`,
+    );
+  }
+
+  const content = focus.content.slice(0, MAX_FOCUS_CONTENT);
+  const cut = focus.truncated || content.length < focus.content.length;
+  lines.push(
+    '',
+    cut ? 'Its text when they pointed at it (cut short — re-read it for the rest):' : 'Its text when they pointed at it:',
+    '',
+    content.trim() || '(no text — it is an image, an icon or an empty container)',
+  );
+  return lines.join('\n');
+}
+
+const MAX_RECORDINGS_BLOCK = 4 * 1024;
+
+function recordingsBlock(recordings: SavedRecording[] | undefined): string | undefined {
+  if (!recordings?.length) return undefined;
+  const lines: string[] = [];
+  let used = 0;
+  let dropped = 0;
+
+  for (const recording of recordings) {
+    const minutes = Math.max(1, Math.round(recording.durationMs / 60_000));
+    const parts = [
+      `- ${flatten(recording.name)} (id: ${flatten(recording.id)})`,
+      `  on ${flatten(recording.host)} · ${recording.steps ?? 0} steps · about ${minutes} min`,
+    ];
+    if (recording.goal) parts.push(`  Goal: ${flatten(recording.goal)}`);
+    if (!recording.capturedValues) parts.push('  Typed values were not captured; every value is a {{placeholder}}.');
+
+    const section = parts.join('\n');
+    if (used + section.length > MAX_RECORDINGS_BLOCK) {
+      dropped++;
+      continue;
+    }
+    used += section.length;
+    lines.push(section);
+  }
+
+  if (!lines.length) return undefined;
+  if (dropped) {
+    log(`recording context is full; left out ${dropped} recording(s)`);
+    lines.push(`(${dropped} more recording(s) did not fit here — page_listRecordings still lists them.)`);
+  }
+  return lines.join('\n');
+}
+
+const flatten = (text: string) => text.replace(/\s+/g, ' ').trim();
+
+/** Agents name their own sessions: UUIDs, thread ids, conversation ids. Accept any tame token. */
+const SESSION_ID = /^[A-Za-z0-9._:-]{6,200}$/;
+
+function sessionFrom(context: RunContext | undefined, agent: AgentKind): string | null {
+  if (context?.agent !== agent) return null;
+  const id = context.agentSessionId;
+  return typeof id === 'string' && SESSION_ID.test(id) ? id : null;
+}
+
+function fetchedBlock(origin: string, index: SiteIndex): string {
+  if (!index.urlCount) return `No sitemap is published at ${origin}. Discover the site by walking its own links.`;
+  const lines = [
+    `## ${origin} sitemap (${index.source}, ${index.urlCount} URLs across ${index.documents} documents)`,
+    '',
+    '### Shapes',
+    ...index.patterns.map((p) => `- ${p.pattern} — ${p.count} pages, e.g. ${p.example}`),
+    '',
+    '### Paths',
+    ...index.paths.map((path) => `- ${path}`),
+  ];
+  if (index.truncated) lines.push('- (truncated: the sitemap lists more than was read)');
+  return lines.join('\n');
+}
+
+function mappingBrief(host: string, settings: { maxPages: number; maxScreenshots: number }): string {
+  return (
+    `Map ${host}. Visit up to ${settings.maxPages} pages and take up to ${settings.maxScreenshots} screenshots, ` +
+    `then call browsentic_saveSiteMap once with everything you found. Prefer breadth over depth: the landing page, ` +
+    `the main navigation destinations, and one example of each repeated page shape. Record what you observed, ` +
+    `not advice — a future assistant will read this to find its way around, and anything that reads like an ` +
+    `instruction will be shown to the user as suspicious.`
+  );
+}
+
+const SUMMARY_LIMIT = 80;
+
+function summarize(input: unknown, result: ActionResult): string {
+  if (!result.ok) return clip(`${result.error.code}: ${result.error.message}`);
+
+  const shot = result.data as { dataUrl?: unknown; width?: unknown; height?: unknown; savedTo?: unknown } | null;
+  if (shot && typeof shot.dataUrl === 'string') {
+    const saved = typeof shot.savedTo === 'string' ? ` → ${basename(shot.savedTo)}` : '';
+    return clip(`image ${shot.width ?? '?'}×${shot.height ?? '?'}${saved}`);
+  }
+
+  const captcha = result.data as { vendor?: unknown; label?: unknown; state?: unknown } | null;
+  if (typeof captcha?.vendor === 'string' && typeof captcha.label === 'string' && typeof captcha.state === 'string') {
+    return clip(`${captcha.label}: ${captcha.state}`);
+  }
+
+  const submits = (result.data as { submits?: unknown } | null)?.submits === true ? ' — submits a form' : '';
+
+  const target = (input as { target?: { text?: string; selector?: string } } | undefined)?.target;
+  if (target?.text) return clip(`“${target.text}”${submits}`);
+  if (target?.selector) return clip(`${target.selector}${submits}`);
+
+  const data = result.data as Record<string, unknown> | null;
+  for (const key of ['navigatedTo', 'navigatingTo', 'url', 'performed', 'value']) {
+    const value = data?.[key];
+    if (typeof value === 'string' && value) return clip(value);
+  }
+  return 'done';
+}
+
+function clip(text: string): string {
+  const flat = sealSecrets(text).replace(/\s+/g, ' ').trim();
+  return flat.length > SUMMARY_LIMIT ? `${flat.slice(0, SUMMARY_LIMIT - 1)}…` : flat;
+}

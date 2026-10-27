@@ -1,0 +1,59 @@
+{
+  "name": "browsentic",
+  "mcpName": "io.github.imshaikot/browsentic",
+  "version": "0.9.0",
+  "description": "An agentic browser harness: run the agent CLI you already use (Claude Code, Codex, Cursor) in your real, signed-in browser from a side panel. Sets up Browsentic Bridge and the extension; MCP is optional.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "packageManager": "yarn@4.17.1",
+  "homepage": "https://browsentic.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imshaikot/browsentic.git",
+    "directory": "src/daemon"
+  },
+  "bugs": "https://github.com/imshaikot/browsentic/issues",
+  "keywords": [
+    "browser-extension",
+    "chrome-extension",
+    "ai-browser-extension",
+    "side-panel",
+    "browser-agent",
+    "browser-automation",
+    "ai-agent",
+    "agentic-browsing",
+    "mcp",
+    "model-context-protocol",
+    "claude-code"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "browsentic": "dist/cli.js",
+    "browsentic-mcp": "dist/mcp.js",
+    "browsentic-mcpd": "dist/daemon-main.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "extension",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "compile": "tsc --noEmit",
+    "prepack": "node scripts/stage-extension.mjs"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/node": "^26.1.1",
+    "@types/ws": "^8.18.1",
+    "tsup": "^8.5.1",
+    "typescript": "^7.0.2",
+    "ws": "^8.21.1",
+    "zod": "^4.4.3"
+  }
+}

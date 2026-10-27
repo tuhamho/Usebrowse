@@ -1,4 +1,92 @@
+# Dependencies. Both yarn.lock files (root and src/daemon/) are committed — the daemon's is also
+# what keeps `yarn --cwd src/daemon` a separate project rather than part of the root install.
 node_modules/
-.env
-.usebrowse/
+
+# Yarn 4 keeps per-project state in .yarn/, and there are two projects here. install-state.gz
+# is a local cache; the package cache is global (enableGlobalCache), so nothing else lands
+# here except .yarn/releases/, which holds the pinned Yarn binary that .yarnrc.yml's yarnPath
+# resolves to — that one has to stay committed, or a fresh clone has no working Yarn.
+**/.yarn/*
+!**/.yarn/releases
+!**/.yarn/patches
+.pnp.*
+
+# Build output — WXT writes to `dist/` (see outDir in wxt.config.ts); tsup writes to src/daemon/dist/.
+# The bare `dist/` pattern matches at any depth, so it covers both.
 dist/
+.output/
+*.tsbuildinfo
+
+# `yarn coverage` writes its report here.
+coverage/
+
+# SwiftPM's build tree for the macOS app. The bundle and the DMG land in dist/mac/, which the
+# `dist/` rule above already covers.
+src/mac/.build/
+
+# The Windows app's Cargo build tree, the payload it carries (staged from the extension and daemon
+# builds by scripts/windows-payload.ts), and the schemas Tauri generates. Its UI builds to
+# src/windows/dist/, which the `dist/` rule covers.
+src/windows/target/
+src/windows/src-tauri/resources/
+src/windows/src-tauri/gen/
+
+# WXT generated types + bundle stats
+.wxt/
+stats.html
+stats-*.json
+
+# Local browser-startup overrides (Chrome binary path, profile dir) — machine-specific
+web-ext.config.ts
+web-ext.config.ts.timestamp-*
+
+# Stray `npm link` artifacts. `yarn daemon:link` links into the real npm prefix and writes
+# nothing here, but the `npm --prefix` form it used to run treated the package directory as
+# the *global* prefix and left self-referential bin/ -> lib/node_modules symlinks behind.
+src/daemon/bin/
+src/daemon/lib/
+
+# Staged by src/daemon/scripts/stage-extension.mjs at prepack time: a copy of the root
+# dist/chrome-mv3 build, because npm's `files` cannot reference paths above the package
+# root. Regenerated on every pack, never committed. `files` still packs it, the same way
+# src/daemon/dist packs despite the `dist/` rule above.
+src/daemon/extension/
+
+# Secrets & environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keystore
+
+# Runtime state written by the daemon. It normally lives in ~/.browsentic (pairing session
+# keys, the auth store, logs) and never inside the repo — this is a belt-and-braces guard
+# for anyone who points HOME or a config override at the working tree. `/browsentic/` is the
+# user-facing half of the same story: screenshots, and skills uploaded from the extension.
+# Root-anchored so it stays scoped to the repo root rather than matching at any depth.
+.browsentic/
+/browsentic/
+auth.json
+daemon.json
+daemon.log
+
+# Claude Code state and guidance. Both are local-only: the skills under .claude/skills/ and
+# the architecture notes in CLAUDE.md were committed until now, so `git log -- CLAUDE.md`
+# still has the history if it is ever wanted back.
+.claude/
+CLAUDE.md
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*

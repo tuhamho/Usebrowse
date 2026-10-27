@@ -1,0 +1,452 @@
+/**
+ * The declared guardrail policy.
+ *
+ * Rules are data. Each one names a condition from a closed vocabulary and an effect,
+ * so the whole policy can be printed, diffed, and overridden from config without
+ * touching enforcement code. `decide()` in ./decide.ts is the only thing that reads it.
+ *
+ * The policy exists because the daemon closes a loop that is normally kept open:
+ * untrusted text comes in from a page, the browser holds live logged-in sessions, and
+ * the agent can navigate anywhere. No prompt makes an agent immune to injection. What
+ * a policy can do is make sure a successful injection has nowhere to send what it took
+ * and cannot act outside the tab the user pointed at.
+ *
+ * Overriding, in `~/.browsentic/config.json`:
+ *
+ *   {
+ *     "requireApproval": ["page.submitForm"],
+ *     "guardrails": {
+ *       "rules": { "off-scope-navigation": "deny", "raw-html-read": "allow" },
+ *       "unattended": "allow",
+ *       "hosts": ["example.com"]
+ *     }
+ *   }
+ */
+
+import { RESERVED_PREFIX } from '@/lib/actions/reserved';
+import { handlesIn, sealedHandles } from '@/lib/secrets';
+import type { RuleEffect } from '@/lib/settings/guardrails';
+import { hostAllowed, hostBearingUrl, targetUrl, targetsAnotherTab, urlPayloadBytes, type Scope } from './scope';
+
+export const SUBMIT_ACTION = 'page.submitForm';
+export const UPLOAD_ACTION = 'page.attachFile';
+export const DOWNLOAD_ACTION = 'page.captureDownload';
+export const EXTRACT_ACTION = 'page.extractText';
+export const CAPTCHA_ACTION = 'page.solveCaptcha';
+export const NETWORK_ACTION = 'page.readNetwork';
+export const INJECT_ACTION = 'page.injectCode';
+export const RUN_CODE_ACTION = 'page.runCode';
+export const SITE_TOOL_ACTION = 'page.callSiteTool';
+
+/** One definition, shared with the settings screen that renders it. */
+export type Effect = RuleEffect;
+
+/**
+ * Who is asking. `agent` is a Browsentic run driven from the side panel — it has a
+ * human watching and an approval channel. `external` is any MCP client attached to the
+ * daemon; it has neither, so `confirm` cannot be answered and resolves via
+ * `policy.unattended`.
+ */
+export type Caller = 'agent' | 'external';
+
+export interface GuardrailRequest {
+  readonly action: string;
+  readonly input: unknown;
+  readonly caller: Caller;
+  readonly scope: Scope;
+}
+
+export type Condition = (request: GuardrailRequest, policy: Policy) => boolean;
+
+/**
+ * Every predicate a rule may name. Closed on purpose: a rule cannot express anything
+ * that is not in here, which keeps the policy inspectable rather than arbitrary code.
+ */
+export const CONDITIONS = {
+  /** Internal actions that only the daemon may originate. */
+  reservedAction: (request) => request.action.startsWith(RESERVED_PREFIX),
+
+  /** javascript:, data:, file: and friends dressed up as a navigation. */
+  nonHttpNavigation: (request) => {
+    const url = hostBearingUrl(request.action, request.input);
+    return !!url && url.protocol !== 'http:' && url.protocol !== 'https:';
+  },
+
+  /**
+   * A navigation URL nothing resolves to a destination. Every other url condition asks a
+   * question about a host, and a string no parser settles has no host to ask it of — so
+   * they all fall silent together, on the input that deserves it least. This is the one
+   * condition that fires on not knowing. It costs nothing the caller wanted: the
+   * extension refuses such a URL a moment later anyway. The daemon parses in Node and the
+   * browser that acts parses in Chrome, and agreeing to differ there is how the last hole
+   * opened.
+   */
+  unreadableNavigation: (request) => targetUrl(request.action, request.input)?.kind === 'opaque',
+
+  /** Leaving the hosts the run was scoped to — the exfiltration path that matters most. */
+  navigatesOffScope: (request) => {
+    const url = hostBearingUrl(request.action, request.input);
+    return !!url && !hostAllowed(url.hostname, request.scope.hosts);
+  },
+
+  /**
+   * A navigation whose query string or fragment is large enough to be a payload. The one
+   * url condition with no host in it, and deliberately: bytes leaving the browser are
+   * bytes leaving the browser, and `/collect?d=…` carries the same ones as the absolute
+   * spelling of it. Downloads are exempt — a signed file url is mostly query string by
+   * design, and gating those would mean a prompt on every export.
+   */
+  carriesUrlPayload: (request, policy) => {
+    if (request.action === DOWNLOAD_ACTION) return false;
+    const target = targetUrl(request.action, request.input);
+    return !!target?.url && urlPayloadBytes(target.url) > policy.urlPayloadBytes;
+  },
+
+  /** Anything that commits a form, however it is spelled. */
+  submitsForm: (request) => submitsForm(request.action, request.input),
+
+  /** Putting one of the user's files into a page. */
+  uploadsFile: (request) => request.action === UPLOAD_ACTION,
+
+  /** Letting a page write a file to the user's disk. `file-upload` pointing the other way. */
+  downloadsFile: (request) => request.action === DOWNLOAD_ACTION,
+
+  /** Moving to a tab the run was not pointed at — someone else's logged-in session. */
+  leavesPinnedTab: (request) => targetsAnotherTab(request.action, request.input, request.scope),
+
+  /** Acting on another site's human-verification control. */
+  answersCaptcha: (request) => request.action === CAPTCHA_ACTION,
+
+  /** Running a tool the site registered through WebMCP — the site decides what it does. */
+  callsSiteTool: (request) => request.action === SITE_TOOL_ACTION,
+
+  /**
+   * Installing agent-written JavaScript into the page. The code is the whole of what is
+   * being authorised — `page.runCode` only ever calls back into what this approved.
+   */
+  injectsCode: (request) => request.action === INJECT_ACTION,
+
+  /**
+   * The two places a caller is named in a condition rather than left to `unattended`.
+   * A toolkit is approved by a person reading it in the side panel, for the conversation
+   * they were having; an MCP client was never in that room, and the switch the user
+   * turned off is not one it can see.
+   *
+   * Both halves have to say so themselves. `unattended` only answers a `confirm`, so a
+   * rule that merely confirms is one config line away from being waived, and writing new
+   * code is the more powerful half of the pair, not the lesser one.
+   */
+  injectsCodeOutsideThePanel: (request) => request.action === INJECT_ACTION && request.caller === 'external',
+
+  runsCodeOutsideThePanel: (request) => request.action === RUN_CODE_ACTION && request.caller === 'external',
+
+  /**
+   * Turns a sealed placeholder back into the credential it stands for. The release
+   * itself happens in the extension, one hop from the page; this is where a person gets
+   * told it is about to. An external caller has nobody to tell, so `unattended` answers.
+   */
+  releasesSecret: (request) => sealedHandles(request.input).length > 0,
+
+  /** Releasing a credential read on one site into a page on another. */
+  releasesSecretOffScope: (request) =>
+    sealedHandles(request.input).some((handle) => !!handle.origin && !hostAllowed(handle.origin, request.scope.hosts)),
+
+  /**
+   * A sealed secret in a URL is a credential on its way out of the browser. Read from
+   * the raw argument, not the parsed URL: parsing percent-encodes the handle's brackets
+   * and the placeholder stops looking like one. Any navigation counts, whatever shape its
+   * URL is in — that a credential is in a URL at all settles this before its host does.
+   */
+  carriesSecretInUrl: (request) => {
+    if (!targetUrl(request.action, request.input)) return false;
+    const url = (request.input as { url?: unknown } | undefined)?.url;
+    return typeof url === 'string' && handlesIn(url).length > 0;
+  },
+
+  /** Raw outerHTML: comments, aria-hidden nodes and off-screen text, the classic carrier. */
+  readsRawHtml: (request) =>
+    request.action === EXTRACT_ACTION && (request.input as { format?: unknown } | undefined)?.format === 'html',
+
+  /** Whole response payloads: session tokens, API keys and other people's PII, wholesale. */
+  readsResponseBodies: (request) =>
+    request.action === NETWORK_ACTION && (request.input as { includeBodies?: unknown } | undefined)?.includeBodies === true,
+
+  /**
+   * Named by the user in the legacy `requireApproval` config key. Submits are excluded
+   * because `form-submission` already owns them — its effect is derived from this same
+   * key, and matching twice would say it twice in the prompt.
+   */
+  listedInConfig: (request, policy) =>
+    request.action !== SUBMIT_ACTION && policy.requireApproval.includes(request.action),
+} satisfies Record<string, Condition>;
+
+export type ConditionName = keyof typeof CONDITIONS;
+
+export interface Rule {
+  /** Stable id. Used to override the effect from config and to name it in logs. */
+  readonly id: string;
+  readonly when: ConditionName;
+  readonly effect: Effect;
+  /** One line, for the approval prompt and the daemon log. */
+  readonly title: string;
+  /** What the agent is told when this rule blocks or is declined. */
+  readonly reason: string;
+}
+
+export const DEFAULT_RULES: readonly Rule[] = [
+  {
+    id: 'reserved-action',
+    when: 'reservedAction',
+    effect: 'deny',
+    title: 'Reserved action',
+    reason: 'That action is internal to Browsentic and cannot be called.',
+  },
+  {
+    id: 'non-http-navigation',
+    when: 'nonHttpNavigation',
+    effect: 'deny',
+    title: 'Non-http navigation',
+    reason: 'Only http(s) URLs can be opened.',
+  },
+  {
+    // A URL is a destination or it is nothing, and this is the rule that makes that true.
+    // `//evil.com/x` used to arrive here as a null every url condition skipped, while the
+    // page it was typed on resolved it and left the site. Classifying fixed that spelling;
+    // refusing what still will not classify is what stops the next one, without anybody
+    // having to think of it first.
+    id: 'unreadable-navigation',
+    when: 'unreadableNavigation',
+    effect: 'deny',
+    title: 'URL with no readable destination',
+    reason: 'That URL does not resolve to a destination Browsentic can check. Pass an absolute https:// URL.',
+  },
+  {
+    id: 'off-scope-navigation',
+    when: 'navigatesOffScope',
+    effect: 'confirm',
+    title: 'Leaves the sites this run is about',
+    reason: 'That URL is not on a site this run was asked about.',
+  },
+  {
+    id: 'url-payload',
+    when: 'carriesUrlPayload',
+    effect: 'confirm',
+    title: 'Carries a large payload in the URL',
+    reason: 'That URL carries an unusually large query string, which is how page content gets smuggled out.',
+  },
+  {
+    id: 'form-submission',
+    when: 'submitsForm',
+    effect: 'confirm',
+    title: 'Submits a form',
+    reason: 'Submitting a form is a consequential action.',
+  },
+  {
+    id: 'site-tool-call',
+    when: 'callsSiteTool',
+    effect: 'confirm',
+    title: 'Calls a tool the site provides',
+    reason: 'A WebMCP site tool runs the site’s own code and can act on the user’s account in one call.',
+  },
+  {
+    id: 'file-upload',
+    when: 'uploadsFile',
+    effect: 'confirm',
+    title: 'Uploads one of the user’s files',
+    reason: 'Putting a file into a page hands it to whoever runs that site.',
+  },
+  {
+    // Symmetric with file-upload: a download is a page-initiated write to the user's disk,
+    // reached through an agent that may be reading an injected instruction. The daemon
+    // refuses executables and anything over the size cap outright, whatever this says.
+    id: 'file-download',
+    when: 'downloadsFile',
+    effect: 'confirm',
+    title: 'Saves a file from the page to disk',
+    reason: 'That writes a file the page chose into the user’s download folder.',
+  },
+  {
+    // The most powerful thing an agent can ask for, and the one gate that has to show
+    // its work: the panel puts the source behind a Review button, because "allow this
+    // action?" is not a question anyone can answer about code they have not read. It
+    // confirms rather than denies because a reviewed function is how twenty repetitions
+    // stop being twenty round trips.
+    id: 'code-injection',
+    when: 'injectsCode',
+    effect: 'confirm',
+    title: 'Runs code it wrote in the page',
+    reason: 'That installs JavaScript the agent wrote into the page, with your logged-in session.',
+  },
+  {
+    // `code-injection` confirms, and a confirm is what `unattended: allow` waives, so on
+    // its own it left installation one config line away from an MCP client. Denying is
+    // not a duplicate of that rule: it is the half that cannot be configured off, which
+    // is what the equivalent rule below has always been for calls.
+    id: 'external-code-injection',
+    when: 'injectsCodeOutsideThePanel',
+    effect: 'deny',
+    title: 'Installs code from outside the panel',
+    reason:
+      'Installing page code needs a person to read it first, and an MCP client has nobody to show it to. Ask from the Browsentic side panel instead.',
+  },
+  {
+    id: 'external-code-execution',
+    when: 'runsCodeOutsideThePanel',
+    effect: 'deny',
+    title: 'Calls injected code from outside the panel',
+    reason:
+      'Code installed by page.injectCode was reviewed and approved for the side-panel conversation that asked for it. It is not available to an MCP client.',
+  },
+  {
+    id: 'leaves-pinned-tab',
+    when: 'leavesPinnedTab',
+    effect: 'confirm',
+    title: 'Moves to another tab',
+    reason: 'That tab is not the one this run was pointed at, and may hold a different logged-in session.',
+  },
+  {
+    // A captcha is another site's check that a person is present. Answering it is something
+    // the user can authorise for their own browsing, but never something to do on their
+    // behalf unasked — so it confirms for a watched run, and `unattended: deny` keeps an
+    // external MCP client from doing it silently.
+    id: 'captcha-solve',
+    when: 'answersCaptcha',
+    effect: 'confirm',
+    title: 'Answers a captcha',
+    reason: 'That ticks a site’s “I am a human” check, and answers any image challenge it sets, on your behalf.',
+  },
+  {
+    id: 'secret-release',
+    when: 'releasesSecret',
+    effect: 'confirm',
+    title: 'Types a saved secret into the page',
+    reason: 'That field holds a credential Browsentic sealed earlier.',
+  },
+  {
+    // The seal records where each value was read. A password from a reset mail typed
+    // into the app it is for is the point of the vault; the same password typed into a
+    // page that merely asks for one is how a credential changes hands.
+    id: 'secret-off-scope',
+    when: 'releasesSecretOffScope',
+    effect: 'confirm',
+    title: 'Uses a secret from another site',
+    reason: 'That credential was read on a different site to the one this run is about.',
+  },
+  {
+    id: 'secret-in-url',
+    when: 'carriesSecretInUrl',
+    effect: 'deny',
+    title: 'Puts a secret in a URL',
+    reason: 'A sealed secret cannot travel in a URL. Type it into the field it belongs in and Browsentic will release it there.',
+  },
+  {
+    id: 'config-require-approval',
+    when: 'listedInConfig',
+    effect: 'confirm',
+    title: 'Listed in requireApproval',
+    reason: 'The user asked to approve this action every time.',
+  },
+  {
+    // Metadata and headers answer “why did that fail?”; a body answers it too, and hands
+    // over everything else the response carried on the way. The sanitizer seals what it
+    // recognises, and a JSON blob of somebody's account data is not a shape it can
+    // recognise. Denied by default for the same reason raw HTML is: the read that
+    // diagnoses is narrower than the read that empties the page. Set this to "allow"
+    // when a run genuinely needs payloads.
+    id: 'network-body-read',
+    when: 'readsResponseBodies',
+    effect: 'deny',
+    title: 'Reads response bodies',
+    reason:
+      'Reading response bodies is disabled by policy — they carry session tokens and personal data wholesale. Status, timing and headers are available without it.',
+  },
+  {
+    // outerHTML carries comments, aria-hidden nodes and off-screen text: everything a
+    // page can hide from the person looking at it but still hand to the model. Denied by
+    // default because page.extractText's rendered text is what a reader actually sees,
+    // and innerText has already dropped the hidden nodes. Set this to "allow" if a run
+    // genuinely needs markup.
+    id: 'raw-html-read',
+    when: 'readsRawHtml',
+    effect: 'deny',
+    title: 'Reads raw HTML',
+    reason: 'Reading raw HTML is disabled by policy. Use the default text format instead.',
+  },
+];
+
+export interface FencePolicy {
+  readonly enabled: boolean;
+  /** Actions whose results carry no page-authored text, or that are fenced elsewhere. */
+  readonly except: readonly string[];
+}
+
+export interface Policy {
+  readonly rules: readonly Rule[];
+  /** Legacy config key, still honoured: actions to confirm every time. */
+  readonly requireApproval: readonly string[];
+  /** What `confirm` becomes for a caller with no way to ask. */
+  readonly unattended: 'allow' | 'deny';
+  readonly urlPayloadBytes: number;
+  readonly fence: FencePolicy;
+}
+
+export interface GuardrailConfig {
+  /** Override any rule's effect by id. */
+  rules?: Record<string, Effect>;
+  unattended?: 'allow' | 'deny';
+  urlPayloadBytes?: number;
+  /** Standing host allowlist added to every run's scope. `['*']` disables confinement. */
+  hosts?: string[];
+  fence?: boolean;
+}
+
+const DEFAULT_URL_PAYLOAD_BYTES = 512;
+
+const DEFAULT_FENCE: FencePolicy = {
+  enabled: true,
+  // closeTab and stopMonitor return an acknowledgement; screenshots are fenced by the
+  // image-specific renderer instead.
+  except: ['page.closeTab', 'page.stopMonitor', 'page.screenshot'],
+};
+
+/**
+ * Build a policy from config. `unattended` is `deny`: an external MCP client has no
+ * approval channel, and leaning on its host to prompt stops being true the moment
+ * someone allowlists the browsentic tools to stop being asked. A caller with nobody
+ * watching does not get the consequential actions. Set it to `allow` to go back to
+ * waiving them, and read `decide()` for what that waives.
+ */
+export function policyFrom(config: GuardrailConfig = {}, requireApproval: readonly string[] = [SUBMIT_ACTION]): Policy {
+  const overrides = config.rules ?? {};
+  const rules = DEFAULT_RULES.map((rule) => {
+    // The legacy key owns the form gate, so `requireApproval: []` still means "gate nothing".
+    const legacy = rule.id === 'form-submission' && !requireApproval.includes(SUBMIT_ACTION) ? 'allow' : rule.effect;
+    return { ...rule, effect: overrides[rule.id] ?? legacy };
+  });
+
+  return {
+    rules,
+    requireApproval,
+    unattended: config.unattended === 'allow' ? 'allow' : 'deny',
+    urlPayloadBytes:
+      typeof config.urlPayloadBytes === 'number' && config.urlPayloadBytes >= 0
+        ? config.urlPayloadBytes
+        : DEFAULT_URL_PAYLOAD_BYTES,
+    fence: config.fence === false ? { ...DEFAULT_FENCE, enabled: false } : DEFAULT_FENCE,
+  };
+}
+
+/** The policy with nothing configured. */
+export const POLICY: Policy = policyFrom();
+
+/**
+ * Whether an action commits a form, however it is spelled. Lives here rather than with
+ * the action definitions because it is a policy judgement, not a fact about the action.
+ */
+export function submitsForm(action: string, input: unknown): boolean {
+  if (action === SUBMIT_ACTION) return true;
+  const args = (input ?? {}) as { pressEnter?: unknown; key?: unknown };
+  if (action === 'page.fillInput' || action === 'page.typeText') return args.pressEnter === true;
+  if (action === 'page.pressKey') return args.key === 'Enter';
+  return false;
+}

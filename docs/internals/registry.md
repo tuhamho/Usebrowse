@@ -1,0 +1,109 @@
+# The action registry
+
+How page actions are defined once and compiled into both the extension and the daemon, how tool
+names are derived from them, and how a build whose two halves disagree is detected.
+
+![One array compiled into two bundles, and what happens when the two halves drift](../assets/registry.png)
+
+---
+
+## One array, two consumers
+
+There are **49 page capabilities**. They are defined once, in
+[`src/lib/actions/registry.ts`](../../src/lib/actions/registry.ts), and that array is compiled into **both**
+the extension and the daemon.
+
+Each action is a small module with a name, a description, a zod input schema and an `execute()`:
+
+```ts
+export const clickElement = defineAction({
+  name: 'page.clickElement',
+  description: '…',
+  input: z.object({ target: targetSchema.describe('…') }),
+  execute({ target }) { /* runs in the page */ },
+});
+```
+
+An action that only some tasks need also names its `group`: `captcha`, `theming`, `diagnostics`,
+`monitoring`, `downloads` or `drag`. [`src/lib/actions/groups.ts`](../../src/lib/actions/groups.ts)
+gives each group its line in the index and the skills that teach it, and `browsentic_openSkill`
+opens a group as one guide. Ungrouped actions are the core. A side-panel run on a CLI that sends
+every schema on every turn lists only the core, and calls the grouped ones through `browsentic_use`
+or, on Codex's app-server, loads them by its own search, each group a namespace
+([Agent runs](agent-runs.md#runners)). The group never leaves the daemon's
+own copy of the registry, so it changes neither the descriptors nor the manifest hash.
+
+`describeActions()` turns that array into tool descriptors by converting each zod schema to JSON
+Schema. The daemon serves those descriptors to MCP clients, so **a tool cannot describe a capability
+the browser does not have**: both are generated from the same source.
+
+---
+
+## Names
+
+Action names are dotted (`page.getPageInfo`); MCP tool names are underscored
+(`page_getPageInfo`). The mapping is mechanical.
+
+`assertToolNamesRoundTrip()` runs on every `tools/list` to prove that every name survives the round
+trip and that no two actions collide. That check is why **action names must not contain
+underscores**: `page.get_info` would come back as `page.get.info`.
+
+---
+
+## Drift detection
+
+The extension hashes its bundled manifest and sends the hash in `hello`. If it differs from the
+daemon's, the daemon:
+
+1. flags `manifestInSync: false`, visible in `browsentic status` and `browsentic_status`;
+2. asks the extension for its actual descriptor list over a `describe` frame and **adopts it**,
+   because the browser is the authority on what the browser can do;
+3. broadcasts `manifest-changed` to control clients, which makes each MCP server emit
+   `notifications/tools/list_changed`.
+
+So a half-rebuilt install degrades into "the tools the browser really has", **loudly**, rather than
+into tool calls that fail at the far end.
+
+The fix is always to rebuild both halves (see [guide/maintenance.md](../guide/maintenance.md#updating)).
+
+---
+
+## Reserved actions
+
+Four names under the `browsentic.` prefix are not page actions:
+
+| Action | Who calls it |
+| --- | --- |
+| `browsentic.saveSiteMap` | The agent, at the end of a mapping run |
+| `browsentic.startRecording` | The intent grammar, on the user's own words |
+| `browsentic.stopRecording` | The intent grammar |
+| `browsentic.readSitemap` | The daemon's agent runner |
+
+The daemon's `invoke()` refuses anything starting with that prefix, so they are unreachable from an
+ordinary MCP client. `browsentic_saveSiteMap` is published as a tool **only** to the MCP server
+spawned inside an agent run.
+
+`browsentic_status` is not in the registry either: the MCP server answers it directly by combining
+daemon state with a one-element `page.getPageInfo` and the current monitor list. Nor is
+`browsentic_openSkill`, which the MCP server answers from the groups, the skills in effect (a
+user's own copy of a skill wins) and the tools this caller is offered, nor `browsentic_use`, which
+it unwraps to the page action named and invokes as that action's own tool would.
+
+---
+
+## Verifying
+
+```sh
+yarn daemon:manifest
+```
+
+Builds the MCP server and prints every tool with its full JSON Schema. No browser needed. This is
+the source of truth that [reference/tools.md](../reference/tools.md) is kept in step with.
+
+---
+
+## Next
+
+**[Request path →](request-path.md)**: how a tool call reaches the page.
+
+Adding one: [Contributing § Adding a capability](contributing.md#adding-a-capability).

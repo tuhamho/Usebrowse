@@ -1,0 +1,1280 @@
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { dirname, join } from 'node:path';
+import type { Duplex } from 'node:stream';
+import { WebSocketServer, type WebSocket } from 'ws';
+import {
+  AGENT_PROTOCOL,
+  ANDROID_PROTOCOL,
+  EXTERNAL_RUN_ID,
+  MIN_EXTENSION_PROTOCOL,
+  SOCKET_PROTOCOL_VERSION,
+  failure,
+  isInstallId,
+  parseFrame,
+  success,
+  type ActionResult,
+  type ExtensionRequest,
+  type RunEvent,
+  type SkillCatalog,
+  type SocketFrame,
+} from '@/lib/actions/protocol';
+import type { AndroidState } from '@/lib/phone/types';
+import type { TaskList } from '@/lib/schedules/task';
+import { hashManifest, type ToolDescriptor } from '@/lib/actions/manifest';
+import { solveCaptcha } from '@/lib/actions/page/solve-captcha';
+import { describeActions } from '@/lib/actions/registry';
+import { RESERVED_PREFIX } from '@/lib/actions/reserved';
+import { AGENTS, isAgentKind, needsNewerExtension, type AgentKind, type AgentState } from '@/lib/agents/catalog';
+import { sourceOf } from '@/lib/stores';
+import { saveScreenshot } from './screenshots';
+import { adoptDownload, listDownloads, resolveAttachment, sweepDownloads, type CapturedItem } from './downloads';
+import {
+  clientProof,
+  isNonce,
+  newNonce,
+  pairingSecret,
+  sameProof,
+  sealSessionKey,
+  serverProof,
+  type Transcript,
+} from '@/lib/actions/handshake';
+import {
+  approveInstall,
+  blockOf,
+  claimSession,
+  consumePairing,
+  createPairing,
+  createSession,
+  hasPendingPairing,
+  labelSession,
+  listBlocked,
+  listSessions,
+  pendingPairings,
+  revokeSessions,
+  sessionCandidates,
+  sessionId,
+  type Install,
+  type Session,
+} from './auth-store';
+import { MAX_PAIR_WAIT_MS, isPairingMode, type Approver, type GrantOutcome, type PairedBy, type RefusalCode } from '@/lib/pairing';
+import { pairingDesk } from './pairing-desk';
+import { noticeDesk } from './notice-desk';
+import { NOTICE_PROTOCOL, asDeviceNotice } from '@/lib/notices';
+import { desktopApp, launchDesktopApp } from './desktop-app';
+import { AgentSession } from './agent/service';
+import { androidOff, type Android } from './android/service';
+import { solveCaptchaWithAnalyst } from './agent/captcha-solver';
+import { FileAnalyses } from './agent/file-analyst';
+import { analyzeRecording } from './agent/recording';
+import { nameSession } from './agent/title';
+import { pairingMode, readAgentConfig, writeActiveAgent, writeAgentModel, writePairingMode } from './agent/config';
+import { agentSkills } from './agent/agent-skills';
+import { agentState, grantRunner, refreshModelLists } from './agent/runners';
+import { deleteSiteMap, deleteSkill, saveSkill } from './agent/skill-store';
+import { loadSkills } from './agent/skills';
+import { commitStaging, discardStaging } from './agent/site-map-store';
+import {
+  INVOKE_KEEPALIVE_MS,
+  type Bridge,
+  type BridgeStatus,
+  type ControlMessage,
+  type ControlRequest,
+  type Described,
+  type SessionSummary,
+} from './control';
+import { ExtensionLink } from './extension-link';
+import { startScheduler } from './schedules/scheduler';
+import { refreshNativeHost } from './native-host';
+import { daemonMainPath } from './ensure-daemon';
+import {
+  ANYWHERE,
+  INJECT_ACTION,
+  RUN_CODE_ACTION,
+  blocked,
+  decide,
+  describe as describeDecision,
+  policyFrom,
+  sealSecrets,
+  summary as summarizeDecision,
+} from './guardrails';
+import { log } from './log';
+import { applyPreference, markConfig, preferencesNow, watchConfig } from './preferences';
+import { readLockfile, writeLockfile, clearLockfile, releaseWake, type Lockfile } from './lockfile';
+import { daemonPorts } from './ports';
+
+type AgentFrame = Extract<SocketFrame, { t: 'agentState' | 'setAgent' | 'setAgentModel' | 'grantAgent' }>;
+type TaskFrame = Extract<SocketFrame, { t: 'tasks' | 'saveTask' | 'deleteTask' | 'pauseTasks' }>;
+type PhoneRequest = Extract<ExtensionRequest, { t: 'phoneOpen' | 'phoneClose' | 'phoneLaunch' | 'cdp' }>;
+
+const PHONE_REQUESTS: ReadonlySet<string> = new Set<PhoneRequest['t']>(['phoneOpen', 'phoneClose', 'phoneLaunch', 'cdp']);
+
+const isPhoneRequest = (request: ExtensionRequest): request is PhoneRequest => PHONE_REQUESTS.has(request.t);
+
+function phoneReply(request: PhoneRequest, result: ActionResult<never>): SocketFrame | null {
+  if (request.t === 'phoneOpen') return { t: 'phoneOpened', id: request.id, result };
+  if (request.t === 'phoneLaunch') return { t: 'androidInfo', id: request.id, result };
+  if (request.t === 'cdp') return { t: 'cdpResult', id: request.id, result };
+  return null;
+}
+
+const IDLE_EXIT_MS = 30 * 60 * 1000;
+const REREGISTER_MS = 60 * 60 * 1000;
+const BINDING_IDLE_MS = 2 * 60 * 1000;
+const BROWSER_LABEL_MAX = 40;
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+const EXTENSION_ORIGIN = /^(chrome|moz|safari-web)-extension:\/\//;
+const CHROMIUM_ORIGIN = /^chrome-extension:\/\//;
+const LOOPBACK_HOST = /^(127\.0\.0\.1|\[::1\]|localhost)(:\d+)?$/i;
+
+interface Binding {
+  id?: string;
+  usedAt: number;
+}
+
+function browserLabel(claimed: unknown): string | undefined {
+  if (typeof claimed !== 'string') return undefined;
+  return claimed.replace(/[^\x20-\x7E]/g, '').trim().slice(0, BROWSER_LABEL_MAX) || undefined;
+}
+
+/**
+ * Why this extension cannot be let in, or null. An extension newer than the daemon is let in: it
+ * says how old a daemon it can live with, and anything it sends that the daemon does not know is
+ * left unanswered. Before 0.8 an extension read only "protocol version mismatch" as a refusal not
+ * worth retrying, so a too-old one is told in those words.
+ */
+export function protocolRefusal(hello: { protocolVersion: unknown; minDaemonProtocol?: unknown }): string | null {
+  const { protocolVersion, minDaemonProtocol } = hello;
+  if (typeof protocolVersion !== 'number' || protocolVersion < MIN_EXTENSION_PROTOCOL) {
+    return `protocol version mismatch: Browsentic Bridge speaks v${SOCKET_PROTOCOL_VERSION} and takes extensions from v${MIN_EXTENSION_PROTOCOL} on`;
+  }
+  if (typeof minDaemonProtocol === 'number' && minDaemonProtocol > SOCKET_PROTOCOL_VERSION) {
+    return `daemon too old: Browsentic Bridge speaks v${SOCKET_PROTOCOL_VERSION}, this extension needs v${minDaemonProtocol}`;
+  }
+  return null;
+}
+
+export interface DaemonOptions {
+  version: string;
+  idleExit?: boolean;
+  android?: Android;
+}
+
+export interface Daemon extends Bridge {
+  port: number;
+  stop(): Promise<void>;
+}
+
+export function persistScreenshot(
+  action: string,
+  input: unknown,
+  result: ActionResult,
+  saveTo?: { dir: string; filename: string },
+): ActionResult {
+  if (action !== 'page.screenshot' || !result.ok) return result;
+  const args = (input ?? {}) as { save?: unknown; filename?: unknown };
+  const data = result.data as { dataUrl?: unknown } | null;
+  if ((args.save !== true && !saveTo) || typeof data?.dataUrl !== 'string') return result;
+  try {
+    const savedTo = saveScreenshot(data.dataUrl, {
+      dir: saveTo?.dir,
+      filename: saveTo?.filename ?? (typeof args.filename === 'string' ? args.filename : undefined),
+    });
+    log(`screenshot saved to ${savedTo}`);
+    return { ok: true, data: { ...(result.data as object), savedTo } };
+  } catch (error) {
+    const saveError = error instanceof Error ? error.message : String(error);
+    log(`screenshot save failed: ${saveError}`);
+    return { ok: true, data: { ...(result.data as object), saveError } };
+  }
+}
+
+/**
+ * The capture's other half. The extension can point at the file the browser just wrote but
+ * cannot move it, judge it, or see the run's scope, so everything that decides whether a
+ * download is kept happens here — and a refusal deletes what the browser already wrote.
+ */
+function persistDownload(action: string, result: ActionResult, hosts?: readonly string[]): ActionResult {
+  if (action !== 'page.captureDownload' || !result.ok) return result;
+  const item = (result.data as { item?: CapturedItem } | null)?.item;
+  if (!item) return result;
+  const adopted = adoptDownload(item, hosts);
+  if (!adopted.ok) {
+    log(`download refused: ${adopted.error.code}: ${adopted.error.message}`);
+    return adopted;
+  }
+  const { id, name, mime, size, host, notes, savedTo } = adopted.data;
+  return { ok: true, data: { downloadId: id, name, mime, size, host, notes, savedTo } };
+}
+
+export async function startDaemon({ version, idleExit = true, android = androidOff() }: DaemonOptions): Promise<Daemon> {
+  const swept = sweepDownloads();
+  if (swept) log(`swept ${swept} expired download${swept === 1 ? '' : 's'}`);
+
+  const bundled = describeActions('chromium');
+  const bundledHash = hashManifest(bundled);
+  const bundledByHash = new Map(
+    (['chromium', 'firefox'] as const).map((target) => {
+      const list = describeActions(target);
+      return [hashManifest(list), list] as const;
+    }),
+  );
+
+  let offered = bundled;
+  const links = new Map<string, ExtensionLink>();
+  const agents = new Map<ExtensionLink, AgentSession>();
+  const analyses = new FileAnalyses();
+  const controls = new Set<WebSocket>();
+  const settingsWatchers = new Set<WebSocket>();
+  const androidWatches = new Map<ExtensionLink | WebSocket, () => void>();
+  let configSeen = markConfig();
+  const unwatchConfig = watchConfig(() => configChanged());
+  let controlSeq = 0;
+  const manifestListeners = new Set<() => void>();
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduler = startScheduler({
+    linkFor: (browser) => {
+      const link = browser ? links.get(browser) : activeLink();
+      return link?.isOpen ? link : null;
+    },
+    publish: (list) => {
+      for (const link of openLinks()) link.send({ t: 'taskList', id: '', result: success(list) });
+    },
+  });
+
+  const lock: Lockfile = {
+    pid: process.pid,
+    port: 0,
+    // Fresh per daemon, so a token that leaked once does not stay valid for every future daemon.
+    token: randomBytes(24).toString('base64url'),
+    protocolVersion: SOCKET_PROTOCOL_VERSION,
+    daemonVersion: version,
+  };
+
+  const approvers = new Map<WebSocket, Approver>();
+  const approverNow = (): Approver =>
+    [...approvers.values()].includes('app') || desktopApp()?.present ? 'app' : 'terminal';
+  const desk = pairingDesk({
+    port: () => lock.port,
+    mode: () => pairingMode(),
+    approver: approverNow,
+    appWatching: () => [...approvers.values()].includes('app'),
+    launchApp: () => launchDesktopApp(),
+    changed: () => {
+      for (const ws of approvers.keys()) send(ws, { event: 'pair-requests-changed' });
+    },
+  });
+
+  const notices = noticeDesk({
+    changed: () => {
+      for (const ws of notices.showers()) send(ws as WebSocket, { event: 'notices-changed' });
+    },
+  });
+
+  const http = createServer((req, res) => {
+    if (!fromLoopback(req)) {
+      res.writeHead(403).end();
+      return;
+    }
+    if (req.url?.startsWith('/health')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, pid: process.pid, version, connected: openLinks().length > 0 }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
+  const wss = new WebSocketServer({ noServer: true });
+  http.on('upgrade', (req, socket, head) => {
+    const role = authorize(req);
+    if (!role) return refuseUpgrade(socket, 'unauthorized');
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      if (role === 'extension') acceptExtension(ws, req);
+      else acceptControl(ws);
+    });
+  });
+
+  const port = await listen(http);
+  lock.port = port;
+  writeLockfile(lock);
+  releaseWake();
+  // A registration an older daemon wrote lets in only what it knew, which leaves the store copies out,
+  // and a browser installed since needs its own; both are put right now and every hour.
+  const reregister = () => refreshNativeHost({ cliPath: join(dirname(daemonMainPath()), 'cli.js') });
+  reregister();
+  const reregistering = setInterval(reregister, REREGISTER_MS);
+  reregistering.unref();
+  log(`daemon ${version} listening on 127.0.0.1:${port} (pid ${process.pid})`);
+  scheduleIdleExit();
+
+  function authorize(req: IncomingMessage): 'extension' | 'control' | null {
+    if (!fromLoopback(req)) {
+      log(`rejected host ${req.headers.host}`);
+      return null;
+    }
+    const origin = req.headers.origin;
+    if (origin && EXTENSION_ORIGIN.test(origin)) return 'extension';
+    if (origin) {
+      log(`rejected web origin ${origin}`);
+      return null;
+    }
+    if (!hasValidToken(req)) {
+      log('rejected control client: missing or invalid token');
+      return null;
+    }
+    return 'control';
+  }
+
+  function hasValidToken(req: IncomingMessage): boolean {
+    const header = req.headers.authorization ?? '';
+    const offered = Buffer.from(header.replace(/^Bearer\s+/i, ''));
+    const expected = Buffer.from(lock.token);
+    return offered.length === expected.length && timingSafeEqual(offered, expected);
+  }
+
+  function acceptExtension(ws: WebSocket, req: IncomingMessage): void {
+    void greet(ws, req).catch((error) => {
+      log('extension handshake failed', error);
+      ws.close(1011, 'handshake failed');
+    });
+  }
+
+  async function greet(ws: WebSocket, req: IncomingMessage): Promise<void> {
+    const reject = (reason: string, retryable: boolean, code: RefusalCode) => {
+      log(`rejected extension: ${reason} [${code}]`);
+      try {
+        ws.send(JSON.stringify({ t: 'unauthorized', reason, retryable, code }));
+      } catch {
+      }
+      ws.close(4401, 'unauthorized');
+    };
+
+    const hello = await nextFrame(ws);
+    if (hello?.t !== 'hello') {
+      log('extension sent no hello frame; closing');
+      ws.close(1002, 'expected hello');
+      return;
+    }
+    const refusal = protocolRefusal(hello);
+    if (refusal) {
+      log(`extension protocol v${hello.protocolVersion} refused: ${refusal}; closing`);
+      ws.close(1002, refusal);
+      return;
+    }
+    if (!isNonce(hello.nonce)) {
+      log('extension hello carried no nonce; closing');
+      ws.close(1002, 'expected a nonce');
+      return;
+    }
+    if (!isInstallId(hello.installId)) {
+      log('extension hello carried no install id; closing');
+      ws.close(1002, 'expected an install id');
+      return;
+    }
+    const install: Install = {
+      installId: hello.installId,
+      origin: req.headers.origin!,
+      extensionVersion: hello.extensionVersion,
+      browser: browserLabel(hello.browser),
+    };
+
+    // At the extension's number, not ours: it proves what it said, and it said its own version.
+    const transcript: Transcript = {
+      protocolVersion: hello.protocolVersion,
+      extensionVersion: hello.extensionVersion,
+      manifestHash: hello.manifestHash,
+      clientNonce: hello.nonce,
+      serverNonce: newNonce(),
+    };
+    ws.send(JSON.stringify({ t: 'challenge', nonce: transcript.serverNonce }));
+
+    const proven = await nextFrame(ws);
+    if (proven?.t !== 'prove') {
+      log('extension sent no proof; closing');
+      ws.close(1002, 'expected a proof');
+      return;
+    }
+
+    let secret: string;
+    let sealedSessionKey: string | undefined;
+    if (hello.auth?.kind === 'pair') {
+      const matched = await matchPairing(proven.proof, transcript, install);
+      if (!matched) {
+        return reject('That pairing code is wrong or expired. Run "browsentic pair" for a new one.', true, 'bad-code');
+      }
+      if (matched.pairedBy === 'code') {
+        consumePairing(matched.code);
+        // Typing a code is consent enough, so ask mode lets this browser back in by itself from now on.
+        approveInstall({ installId: install.installId, origin: install.origin, browser: install.browser });
+      }
+      desk.consume(install.installId);
+      secret = matched.secret;
+      const session = createSession(install, matched.pairedBy);
+      sealedSessionKey = await sealSessionKey(secret, transcript, session.key);
+      log(`paired ${install.browser ?? install.origin} (extension ${hello.extensionVersion}) [${matched.pairedBy}]`);
+      refreshNativeHost();
+    } else if (hello.auth?.kind === 'session') {
+      const session = await matchSession(proven.proof, transcript, install);
+      if (!session) {
+        const code = blockOf(install.installId) ? 'revoked' : 'unknown';
+        return reject('This browser is no longer paired. Run "browsentic pair" to pair again.', false, code);
+      }
+      claimSession(session.key, install);
+      secret = session.key;
+    } else {
+      return reject('That hello named no credential to prove.', false, 'bad-code');
+    }
+
+    await settle(ws, hello, install, transcript, secret, sealedSessionKey);
+  }
+
+  async function matchSession(proof: unknown, transcript: Transcript, install: Install): Promise<Session | null> {
+    for (const session of sessionCandidates(install)) {
+      if (sameProof(proof, await clientProof(session.key, transcript))) return session;
+    }
+    return null;
+  }
+
+  /** The grant held for this very browser first, so a typed code costs at most one more PBKDF2 than before. */
+  async function matchPairing(
+    proof: unknown,
+    transcript: Transcript,
+    install: Install,
+  ): Promise<{ code: string; secret: string; pairedBy: PairedBy } | null> {
+    const granted = desk.grantFor(install.installId, install.origin);
+    const candidates = [
+      ...(granted ? [{ code: granted.code, pairedBy: granted.pairedBy }] : []),
+      ...pendingPairings().map((code) => ({ code, pairedBy: 'code' as const })),
+    ];
+    for (const candidate of candidates) {
+      const secret = await pairingSecret(candidate.code, transcript);
+      if (sameProof(proof, await clientProof(secret, transcript))) return { ...candidate, secret };
+    }
+    return null;
+  }
+
+  async function settle(
+    ws: WebSocket,
+    hello: Extract<SocketFrame, { t: 'hello' }>,
+    install: Install,
+    transcript: Transcript,
+    secret: string,
+    sealedSessionKey?: string,
+  ): Promise<void> {
+    // Only the same browser profile is superseded: its worker restarted and the old socket lingers.
+    links.get(install.installId)?.close('superseded by a newer connection');
+    const known = bundledByHash.get(hello.manifestHash);
+    const manifestInSync = known !== undefined;
+    const welcome = {
+      daemonVersion: version,
+      manifestHash: known ? hello.manifestHash : bundledHash,
+      manifestInSync,
+      sealedSessionKey,
+    };
+    // Proven before the link is listed, so no broadcast can reach this browser ahead of its welcome.
+    const proof = await serverProof(secret, transcript, welcome);
+    const accepted = new ExtensionLink(
+      ws,
+      { ...hello, ...install },
+      (closing) => {
+        agents.get(closing)?.dispose();
+        agents.delete(closing);
+        scheduler.linkClosed(closing.id);
+        analyses.cancelOwnedBy(closing);
+        unwatchAndroid(closing);
+        void android.release(closing);
+        if (links.get(closing.id) === closing) links.delete(closing.id);
+        log(`${closing.label} disconnected`);
+        scheduleIdleExit();
+        settleOffer();
+      },
+      (request, source) => {
+        if (request.t === 'notice') {
+          const notice = asDeviceNotice(request.notice);
+          const delivered = !!notice && notices.offer(notice, { id: source.id, browser: source.label });
+          if (notice) log(`notice ${notice.id} from ${source.label}: ${delivered ? 'handed to the app' : 'no app to show it'}`);
+          return source.send({ t: 'noticeAck', id: request.id, delivered });
+        }
+        if (request.t === 'analyzeFile') {
+          void analyses
+            .start(request, readAgentConfig(), source)
+            .then((report) => source.send({ t: 'fileReport', id: request.id, result: success(report) }))
+            .catch((error) =>
+              source.send({ t: 'fileReport', id: request.id, result: failure('AGENT_FAILED', String(error)) }),
+            );
+          return;
+        }
+        if (request.t === 'cancelAnalysis') {
+          analyses.cancel(request.fileId);
+          return;
+        }
+        if (request.t === 'nameSession') {
+          void nameSession(request, readAgentConfig())
+            .then((result) => source.send({ t: 'sessionName', id: request.id, result }))
+            .catch((error) =>
+              source.send({ t: 'sessionName', id: request.id, result: failure('AGENT_FAILED', String(error)) }),
+            );
+          return;
+        }
+        if (request.t === 'analyzeRecording') {
+          void analyzeRecording(request, readAgentConfig())
+            .then((result) => source.send({ t: 'recordingWorkflow', id: request.id, result }))
+            .catch((error) =>
+              source.send({
+                t: 'recordingWorkflow',
+                id: request.id,
+                result: failure('AGENT_FAILED', String(error)),
+              }),
+            );
+          return;
+        }
+        if (
+          request.t === 'agentState' ||
+          request.t === 'setAgent' ||
+          request.t === 'setAgentModel' ||
+          request.t === 'grantAgent'
+        ) {
+          void settleAgent(request).then((state) => {
+            source.send({ t: 'agentInfo', id: request.id, result: state.ok ? agentStateFor(source, state.data) : state });
+            // The catalog's agent-skill half belongs to the agent that just took over.
+            if (request.t === 'setAgent') pushSkillCatalog(source);
+            if (request.t === 'grantAgent') announceAgent(source);
+            else if (request.t !== 'agentState') configChanged(source);
+          });
+          return;
+        }
+        if (request.t === 'listSkills') {
+          return source.send({ t: 'skillCatalog', id: request.id, result: skillCatalogFor(source, request.refresh === true) });
+        }
+        if (request.t === 'preferences') {
+          return source.send({ t: 'preferencesInfo', id: request.id, result: success(preferencesNow()) });
+        }
+        if (request.t === 'setPreference') {
+          source.send({ t: 'preferencesInfo', id: request.id, result: applyPreference(request.change) });
+          return configChanged(source);
+        }
+        if (request.t === 'taskDone') return scheduler.finished(request.taskId, request.result);
+        if (request.t === 'runTaskNow') {
+          return source.send({ t: 'taskList', id: request.id, result: scheduler.runNow(request.taskId, source) });
+        }
+        if (request.t === 'tasks' || request.t === 'saveTask' || request.t === 'deleteTask' || request.t === 'pauseTasks') {
+          return source.send({ t: 'taskList', id: request.id, result: settleTasks(request) });
+        }
+        if (request.t === 'saveSkill') {
+          source.send({ t: 'skillResult', id: request.id, result: saveSkill(request.skill) });
+          return shareSkillCatalog();
+        }
+        if (request.t === 'deleteSkill') {
+          source.send({ t: 'skillResult', id: request.id, result: deleteSkill(request.name) });
+          return shareSkillCatalog();
+        }
+        if (request.t === 'deleteSiteMap') {
+          source.send({ t: 'skillResult', id: request.id, result: deleteSiteMap(request.name) });
+          return shareSkillCatalog();
+        }
+        if (request.t === 'activateSiteMap') {
+          const result = commitStaging(request.stagingId, request.exactHost === true);
+          source.send({
+            t: 'skillResult',
+            id: request.id,
+            result: result.ok ? { ok: true, data: { name: result.data.name, path: result.data.path } } : result,
+          });
+          return shareSkillCatalog();
+        }
+        if (request.t === 'discardSiteMap') {
+          return source.send({ t: 'skillResult', id: request.id, result: discardStaging(request.stagingId) });
+        }
+        if (isPhoneRequest(request)) return settlePhone(request, source);
+        session(source).handle(request);
+      },
+    );
+    links.set(accepted.id, accepted);
+    accepted.tools = known ?? bundled;
+    settleOffer();
+    log(`extension ${hello.extensionVersion} connected from ${accepted.label} (manifest ${manifestInSync ? 'in sync' : 'DRIFTED'})`);
+    accepted.send({ t: 'welcome', ...welcome, protocolVersion: SOCKET_PROTOCOL_VERSION, proof });
+    scheduleIdleExit();
+    void pushAgentState(accepted);
+    watchModels();
+    pushSkillCatalog(accepted);
+    accepted.send({ t: 'preferencesInfo', id: '', result: success(preferencesNow()) });
+    accepted.send({ t: 'taskList', id: '', result: success(scheduler.list()) });
+    scheduler.linkOpened();
+    if (accepted.speaks(ANDROID_PROTOCOL) && CHROMIUM_ORIGIN.test(accepted.origin)) watchAndroid(accepted);
+    if (!known) await adoptExtensionManifest(accepted);
+  }
+
+  function watchAndroid(link: ExtensionLink): void {
+    const push = (state: AndroidState) => {
+      if (link.isOpen) link.send({ t: 'androidInfo', id: '', result: success(state) });
+    };
+    androidWatches.set(link, android.watch(push));
+  }
+
+  function peekAndroid(): ActionResult<AndroidState> {
+    const known = android.peek();
+    return known ? success(known) : failure('NOT_CHECKED', 'Nobody is watching for phones, so the Bridge has not looked.');
+  }
+
+  function unwatchAndroid(watcher: ExtensionLink | WebSocket): void {
+    androidWatches.get(watcher)?.();
+    androidWatches.delete(watcher);
+  }
+
+  function settlePhone(request: PhoneRequest, source: ExtensionLink): void {
+    const answer = (result: ActionResult<never>) => {
+      const reply = phoneReply(request, result);
+      if (reply) source.send(reply);
+    };
+    if (!source.speaks(ANDROID_PROTOCOL)) {
+      return answer(failure('UNSUPPORTED', `Android needs an extension that speaks protocol ${ANDROID_PROTOCOL}.`));
+    }
+    const broke = (error: unknown) => {
+      log(`phone ${request.t} failed in the Bridge`, error);
+      answer(failure('BRIDGE_ERROR', error instanceof Error ? error.message : String(error)));
+    };
+    if (request.t === 'phoneLaunch') {
+      void android.launch(request.serial, request.url).then((result) => source.send({ t: 'androidInfo', id: request.id, result }), broke);
+    } else if (request.t === 'phoneOpen') {
+      void android.open(source, request.serial).then((result) => source.send({ t: 'phoneOpened', id: request.id, result }), broke);
+    } else if (request.t === 'cdp') {
+      void android.command(source, request).catch(broke);
+    } else {
+      void android.close(source, request.serial).catch(broke);
+    }
+  }
+
+  function openLinks(): ExtensionLink[] {
+    return [...links.values()].filter((link) => link.isOpen);
+  }
+
+  function inSync(link: ExtensionLink): boolean {
+    return bundledByHash.has(link.manifestHash);
+  }
+
+  /** The browser the user was last in, for a caller that has no run to say which one it means. */
+  function activeLink(): ExtensionLink | null {
+    return openLinks().reduce<ExtensionLink | null>(
+      (latest, link) => (latest && latest.lastActive >= link.lastActive ? latest : link),
+      null,
+    );
+  }
+
+  function resetConversations(): void {
+    for (const agent of agents.values()) agent.handle({ t: 'reset' });
+  }
+
+  function announceAgent(except?: ExtensionLink): void {
+    for (const link of openLinks()) {
+      if (link === except) continue;
+      void pushAgentState(link);
+      pushSkillCatalog(link);
+    }
+  }
+
+  function shareSkillCatalog(): void {
+    for (const link of openLinks()) pushSkillCatalog(link);
+  }
+
+  /**
+   * Hands every open surface what config.json now says, once per change however many paths
+   * noticed it: the write's own caller already has the answer, so it is skipped.
+   */
+  function configChanged(except?: ExtensionLink): void {
+    const mark = markConfig();
+    if (mark.file === configSeen.file) return;
+    const agentMoved = mark.agent !== configSeen.agent;
+    configSeen = mark;
+    const preferences = success(preferencesNow());
+    for (const link of openLinks()) {
+      if (link === except) continue;
+      link.send({ t: 'preferencesInfo', id: '', result: preferences });
+      if (agentMoved) {
+        void pushAgentState(link);
+        pushSkillCatalog(link);
+      }
+    }
+    for (const ws of settingsWatchers) send(ws, { event: 'settings-changed' });
+  }
+
+  async function settleAgent(request: AgentFrame): Promise<ActionResult<AgentState>> {
+    if (request.t !== 'agentState' && !isAgentKind(request.agent)) {
+      return failure('INVALID_INPUT', `"${String(request.agent)}" is not an agent Browsentic knows.`);
+    }
+    if (request.t === 'setAgent') {
+      writeActiveAgent(request.agent);
+      // The held conversation belongs to the agent that just left; the next turn starts fresh.
+      resetConversations();
+      log(`agent set to ${AGENTS[request.agent].label}`);
+    }
+    if (request.t === 'setAgentModel') {
+      // A model change keeps held conversations — every CLI resumes a session under a new model.
+      const model = typeof request.model === 'string' ? request.model : null;
+      if (!writeAgentModel(request.agent, model)) {
+        return failure('INVALID_INPUT', `"${String(model)}" is not a model id: it has to start with a letter or digit and hold no spaces.`);
+      }
+      log(`${AGENTS[request.agent].label} model set to ${model?.trim() || 'the default'}`);
+    }
+    if (request.t === 'grantAgent') await grantRunner(request.agent);
+    const recheck = request.t === 'agentState' && request.refresh === true;
+    const state = await agentState(readAgentConfig(), { refresh: request.t !== 'agentState' || recheck });
+    watchModels({ force: recheck });
+    return success(state);
+  }
+
+  /**
+   * Reads each agent's own model list after the state has gone out, and sends the state again
+   * when one changed. A forced read sends it regardless, so the list's age is current.
+   */
+  function watchModels({ force = false } = {}): void {
+    void refreshModelLists(readAgentConfig(), { force })
+      .then((changed) => {
+        if (changed || force) for (const link of openLinks()) void pushAgentState(link);
+      })
+      .catch((error: unknown) => log(`could not refresh the model lists: ${String(error)}`));
+  }
+
+  function settleTasks(request: TaskFrame): ActionResult<TaskList> {
+    if (request.t === 'saveTask') return scheduler.save(request.task);
+    if (request.t === 'deleteTask') return scheduler.remove(request.taskId);
+    if (request.t === 'pauseTasks') return scheduler.pause(request.paused === true);
+    return success(scheduler.list());
+  }
+
+  async function pushAgentState(target: ExtensionLink): Promise<void> {
+    const state = await agentState(readAgentConfig());
+    if (target.isOpen) target.send({ t: 'agentInfo', id: '', result: agentStateFor(target, state) });
+  }
+
+  function knowsAgent(link: ExtensionLink, kind: AgentKind): boolean {
+    return link.speaks(AGENT_PROTOCOL[kind] ?? 0);
+  }
+
+  // An older panel would throw on an agent it cannot look up, so it hears only of those it knows.
+  function agentStateFor(link: ExtensionLink, state: AgentState): ActionResult<AgentState> {
+    if (!knowsAgent(link, state.active)) return failure('UNSUPPORTED', needsNewerExtension(state.active));
+    return success({ ...state, runners: state.runners.filter((runner) => knowsAgent(link, runner.kind)) });
+  }
+
+  function skillCatalogFor(link: ExtensionLink, refresh = false): ActionResult<SkillCatalog> {
+    const catalog = skillCatalogNow(refresh);
+    return catalog.ok && !knowsAgent(link, catalog.data.agent) ? failure('UNSUPPORTED', needsNewerExtension(catalog.data.agent)) : catalog;
+  }
+
+  function skillCatalogNow(refresh = false): ActionResult<SkillCatalog> {
+    try {
+      const config = readAgentConfig();
+      const skills = loadSkills().map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        category: skill.category,
+        domains: skill.domains,
+        source: skill.source,
+      }));
+      return success({ agent: config.agent, skills, agentSkills: agentSkills(config, { refresh }) });
+    } catch (error) {
+      return failure('AGENT_FAILED', String(error));
+    }
+  }
+
+  function pushSkillCatalog(target: ExtensionLink): void {
+    if (target.isOpen) target.send({ t: 'skillCatalog', id: '', result: skillCatalogFor(target) });
+  }
+
+  function session(source: ExtensionLink): AgentSession {
+    const held = agents.get(source);
+    if (held) return held;
+    const created = new AgentSession({
+      invoke: (action, input, opts) => invokeOn(source, action, input, opts),
+      emit: (id, event) => source.send({ t: 'run', id, event }),
+      draft: (id, draft) => source.send({ t: 'siteMapDraft', id, draft }),
+      running: () => [...agents.values()].reduce((total, agent) => total + agent.running, 0),
+      actionNames: () => source.tools.map((tool) => tool.name),
+      awaitAnalysis: (fileId, signal) => analyses.wait(fileId, signal),
+      knowsAgent: (kind) => knowsAgent(source, kind),
+    });
+    agents.set(source, created);
+    return created;
+  }
+
+  function sessionRunning(runId: string): AgentSession | undefined {
+    return [...agents.values()].find((agent) => agent.owns(runId));
+  }
+
+  // A drifted build is served its own list, and only its own: the adopted list lives on the
+  // link and leaves with it, so a browser that agrees with us again is back on a bundled list
+  // the moment it reconnects — the recovery direction of "the newer side wins".
+  async function adoptExtensionManifest(source: ExtensionLink): Promise<void> {
+    const reported = await source.describe();
+    if (!reported?.length) {
+      log(`${source.label} drifted but its manifest could not be fetched; serving it the bundled tool list`);
+      return;
+    }
+    source.tools = reported;
+    log(`adopted ${reported.length} tools from ${source.label} (bundled list was ${bundled.length})`);
+    settleOffer();
+  }
+
+  /** What a caller with no run of its own is offered: the list of the browser the user was last in. */
+  function offeredTools(): ToolDescriptor[] {
+    return activeLink()?.tools ?? bundled;
+  }
+
+  // A browser's worker restarting closes one link and opens another in the same tick, so the
+  // comparison waits for the tick to end rather than announcing a change that has already undone itself.
+  function settleOffer(): void {
+    setImmediate(() => {
+      const now = offeredTools();
+      if (now === offered) return;
+      offered = now;
+      for (const listener of manifestListeners) listener();
+      broadcast({ event: 'manifest-changed' });
+    });
+  }
+
+  /**
+   * A caller's tab ids only mean something in the browser that issued them, so a burst of calls
+   * stays with one browser. Once the caller goes quiet, its next call follows the user instead.
+   */
+  function routeFor(binding: Binding): ExtensionLink | null {
+    const held = binding.id ? links.get(binding.id) : undefined;
+    const target = held?.isOpen && Date.now() - binding.usedAt < BINDING_IDLE_MS ? held : activeLink();
+    binding.id = target?.id;
+    binding.usedAt = Date.now();
+    return target;
+  }
+
+  // A tool list belongs to a browser. A run is offered the list of the browser it runs in; a
+  // caller with no run is offered the browser its next call would reach, so list and calls agree.
+  function describeFor(runId: string | undefined, binding: Binding): Described {
+    const running = runId ? [...agents].find(([, agent]) => agent.owns(runId)) : undefined;
+    const offer = running && runId ? running[1].offerFor(runId) : null;
+    if (offer && running && runId) {
+      running[1].described(runId);
+      const withheld = (name: string) => offer.withheld.includes(name);
+      return {
+        tools: running[0].tools.filter(({ name }) => !withheld(name)),
+        reserved: offer.reserved,
+        withheld: running[0].tools.filter(({ name }) => withheld(name)),
+        onDemand: offer.onDemand,
+        delivery: offer.delivery,
+      };
+    }
+
+    const tools = routeFor(binding)?.tools ?? bundled;
+    const config = readAgentConfig();
+    const policy = policyFrom(config.guardrails, config.requireApproval);
+    const denied = (action: string) =>
+      decide({ action, input: {}, caller: 'external', scope: ANYWHERE }, policy).effect === 'deny';
+    return {
+      tools: tools.filter(({ name }) => !((name === INJECT_ACTION || name === RUN_CODE_ACTION) && denied(name))),
+      reserved: [],
+    };
+  }
+
+  function acceptControl(ws: WebSocket): void {
+    const client = `c${++controlSeq}`;
+    const binding: Binding = { usedAt: 0 };
+    // A connection that has spoken for an agent run is that run's own tool server, and a run
+    // never gets to loosen the guardrails it is running under.
+    let speaksForRun = false;
+    // Invokes still going on this connection, so a caller that stops waiting can say so.
+    const inflight = new Map<string, AbortController>();
+    controls.add(ws);
+    scheduleIdleExit();
+    ws.on('message', async (raw) => {
+      let request: ControlRequest;
+      try {
+        request = JSON.parse(String(raw)) as ControlRequest;
+      } catch {
+        return log('dropped unparseable control frame');
+      }
+      if ((request.op === 'describe' || request.op === 'invoke') && request.runId) speaksForRun = true;
+      if (request.op === 'describe') {
+        return send(ws, { id: request.id, op: 'describe', ...describeFor(request.runId, binding) });
+      }
+      if (request.op === 'status') {
+        return send(ws, { id: request.id, op: 'status', status: statusNow(routeFor(binding)) });
+      }
+      if (request.op === 'cancel') {
+        inflight.get(request.id)?.abort();
+        return;
+      }
+      if (request.op === 'invoke') {
+        const working = request.keepAlive
+          ? setInterval(() => send(ws, { id: request.id, op: 'working' }), INVOKE_KEEPALIVE_MS)
+          : undefined;
+        const abandoned = new AbortController();
+        inflight.set(request.id, abandoned);
+        let result: ActionResult;
+        try {
+          if (request.runId) {
+            result =
+              (await sessionRunning(request.runId)?.invokeForRun(request.runId, request.action, request.input, abandoned.signal)) ??
+              failure('RUN_INACTIVE', 'This agent run is no longer active');
+            if (!result.ok && result.error.code === 'RUN_INACTIVE') {
+              log(`control ${client} invoked ${request.action} for inactive run ${request.runId}`);
+            }
+          } else {
+            result = await invokeExternal(routeFor(binding), request.action, request.input, client);
+          }
+        } finally {
+          clearInterval(working);
+          inflight.delete(request.id);
+        }
+        return send(ws, { id: request.id, op: 'invoke', result });
+      }
+      if (request.op === 'pair') {
+        const { code, expiresAt } = createPairing();
+        log('minted a pairing code');
+        return send(ws, { id: request.id, op: 'pair', code, expiresAt });
+      }
+      if (request.op === 'sessions') {
+        return send(ws, { id: request.id, op: 'sessions', sessions: sessionSummaries() });
+      }
+      if (request.op === 'agent') {
+        const changed = request.set ?? request.grant;
+        if (changed && !isAgentKind(changed)) {
+          return send(ws, { id: request.id, op: 'agent', state: await agentState(readAgentConfig()) });
+        }
+        if (request.set) {
+          writeActiveAgent(request.set);
+          resetConversations();
+          log(`control ${client} set the agent to ${AGENTS[request.set].label}`);
+        }
+        if (request.grant) await grantRunner(request.grant);
+        const listed = isAgentKind(request.models);
+        if (listed) await refreshModelLists(readAgentConfig(), { force: true, only: request.models });
+        const state = await agentState(readAgentConfig(), { refresh: !!changed || listed });
+        if (request.set) configChanged();
+        if (request.grant || listed) announceAgent();
+        else if (!request.set) watchModels();
+        return send(ws, { id: request.id, op: 'agent', state });
+      }
+      if (request.op === 'preferences') {
+        if (request.watch) settingsWatchers.add(ws);
+        return send(ws, { id: request.id, op: 'preferences', result: success(preferencesNow()) });
+      }
+      if (request.op === 'android') {
+        if (request.launch && speaksForRun) {
+          log(`control ${client} tried to open Chrome on a phone from inside an agent run; refused`);
+          return send(ws, {
+            id: request.id,
+            op: 'android',
+            result: failure('BLOCKED', 'An agent run cannot open apps on the phone. Open Chrome from the side panel or the desktop app.'),
+          });
+        }
+        if (request.watch && !androidWatches.has(ws)) {
+          androidWatches.set(ws, android.watch((state) => send(ws, { event: 'android-changed', state })));
+        }
+        if (request.watch === false) unwatchAndroid(ws);
+        const result = request.launch
+          ? await android.launch(request.launch, request.url)
+          : request.peek
+            ? peekAndroid()
+            : success(await android.state());
+        return send(ws, { id: request.id, op: 'android', result });
+      }
+      if (request.op === 'setPreference') {
+        if (speaksForRun) {
+          log(`control ${client} tried to change a setting from inside an agent run; refused`);
+          return send(ws, {
+            id: request.id,
+            op: 'preferences',
+            result: failure('BLOCKED', 'An agent run cannot change the settings it runs under. Change them from the settings page or the desktop app.'),
+          });
+        }
+        send(ws, { id: request.id, op: 'preferences', result: applyPreference(request.change) });
+        return configChanged();
+      }
+      if (request.op === 'grant') {
+        if (speaksForRun) {
+          log(`control ${client} asked for a pairing grant from inside an agent run; refused`);
+          return send(ws, { id: request.id, op: 'grant', outcome: { refused: 'off', error: 'An agent run cannot pair a browser.' } });
+        }
+        return send(ws, { id: request.id, op: 'grant', outcome: await settleGrant(request) });
+      }
+      if (request.op === 'pairRequests') {
+        if (request.watch) approvers.set(ws, request.as === 'terminal' ? 'terminal' : 'app');
+        return send(ws, { id: request.id, op: 'pairRequests', requests: desk.pending() });
+      }
+      if (request.op === 'decide') {
+        if (speaksForRun) {
+          log(`control ${client} tried to decide a pairing request from inside an agent run; refused`);
+          return send(ws, { id: request.id, op: 'decide', ok: false, error: 'An agent run cannot let a browser in.' });
+        }
+        const ok = typeof request.request === 'string' && desk.decide(request.request, request.allow === true, request.label);
+        return send(ws, { id: request.id, op: 'decide', ok, ...(ok ? {} : { error: 'No request or blocked browser has that id.' }) });
+      }
+      if (request.op === 'pairing') {
+        if (request.set !== undefined) {
+          if (speaksForRun) {
+            log(`control ${client} tried to change how browsers pair from inside an agent run; refused`);
+            return send(ws, { id: request.id, op: 'pairing', mode: pairingMode(), approver: approverNow(), error: 'An agent run cannot change how browsers pair.' });
+          }
+          if (!isPairingMode(request.set)) {
+            return send(ws, { id: request.id, op: 'pairing', mode: pairingMode(), approver: approverNow(), error: 'Pairing is auto, ask or code.' });
+          }
+          writePairingMode(request.set);
+          log(`control ${client} set pairing to ${request.set}`);
+          configChanged();
+        }
+        return send(ws, { id: request.id, op: 'pairing', mode: pairingMode(), approver: approverNow() });
+      }
+      if (request.op === 'blocked') {
+        return send(ws, { id: request.id, op: 'blocked', blocked: listBlocked() });
+      }
+      if (request.op === 'label') {
+        if (speaksForRun) return send(ws, { id: request.id, op: 'label', ok: false, error: 'An agent run cannot rename a browser.' });
+        const ok = typeof request.session === 'string' && typeof request.label === 'string' && labelSession(request.session, request.label);
+        return send(ws, { id: request.id, op: 'label', ok });
+      }
+      if (request.op === 'notices' || request.op === 'takeNotices' || request.op === 'openNotice') {
+        if (speaksForRun) {
+          log(`control ${client} tried to handle notices from inside an agent run; refused`);
+          if (request.op === 'takeNotices') return send(ws, { id: request.id, op: 'takeNotices', notices: [] });
+          return send(ws, { id: request.id, op: request.op, ok: false });
+        }
+        if (request.op === 'notices') {
+          if (request.watch === false) notices.unwatch(ws);
+          else if (request.watch) notices.watch(ws, request.allowed === true);
+          return send(ws, { id: request.id, op: 'notices', ok: true });
+        }
+        if (request.op === 'takeNotices') return send(ws, { id: request.id, op: 'takeNotices', notices: notices.take(ws) });
+        const route = typeof request.notice === 'string' ? notices.routeOf(request.notice) : undefined;
+        const link = route ? links.get(route) : undefined;
+        const ok = !!link?.isOpen && link.speaks(NOTICE_PROTOCOL);
+        if (ok) link!.send({ t: 'openNotice', noticeId: request.notice });
+        return send(ws, { id: request.id, op: 'openNotice', ok });
+      }
+      if (request.op === 'revoke') {
+        const { session: id, origin } = request;
+        const revoked = revokeSessions((session) => (id ? sessionId(session) === id : !origin || session.origin === origin));
+        for (const link of openLinks()) {
+          if (id ? link.id === id : !origin || link.origin === origin) link.close('pairing revoked');
+        }
+        log(`revoked ${revoked} session(s)`);
+        return send(ws, { id: request.id, op: 'revoke', revoked });
+      }
+    });
+    const drop = () => {
+      // A tool server gone mid-call has no one left to answer: its approvals come off the screen.
+      for (const call of inflight.values()) call.abort();
+      controls.delete(ws);
+      settingsWatchers.delete(ws);
+      approvers.delete(ws);
+      notices.unwatch(ws);
+      unwatchAndroid(ws);
+      scheduleIdleExit();
+    };
+    ws.on('close', drop);
+    ws.on('error', drop);
+  }
+
+  function send(ws: WebSocket, message: ControlMessage): void {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
+  }
+
+  function broadcast(message: ControlMessage): void {
+    for (const ws of controls) send(ws, message);
+  }
+
+  /** A host in ask mode may hold its request open, so an open page hears the decision at once. */
+  async function settleGrant(request: Extract<ControlRequest, { op: 'grant' }>): Promise<GrantOutcome> {
+    if (!isInstallId(request.installId) || typeof request.caller !== 'string') {
+      return { refused: 'off', error: 'That grant request names no browser.' };
+    }
+    const asker = {
+      installId: request.installId,
+      caller: request.caller,
+      browser: browserLabel(request.browser),
+      extensionVersion: typeof request.extensionVersion === 'string' ? request.extensionVersion.slice(0, 32) : 'unknown',
+      gesture: request.gesture === true,
+    };
+    const first = desk.ask(asker);
+    const waitMs = Math.min(MAX_PAIR_WAIT_MS, Math.max(0, Number(request.waitMs) || 0));
+    if (!('wait' in first) || !waitMs) return first;
+    await desk.settled(asker.installId, waitMs);
+    return desk.ask({ ...asker, gesture: false });
+  }
+
+  function sessionSummaries(): SessionSummary[] {
+    return listSessions().map(({ key: _key, installId: _installId, ...session }) => {
+      const id = sessionId({ installId: _installId, origin: session.origin });
+      return { id, ...session, source: sourceOf(session.origin), connected: links.get(id)?.isOpen === true };
+    });
+  }
+
+  function statusNow(target: ExtensionLink | null): BridgeStatus {
+    return {
+      connected: !!target,
+      daemonVersion: version,
+      protocolVersion: SOCKET_PROTOCOL_VERSION,
+      port,
+      manifestInSync: !target || inSync(target),
+      extensionVersion: target?.extensionVersion,
+      browser: target?.browser,
+      connectedBrowsers: openLinks().length,
+      pairedBrowsers: listSessions().length,
+      pairingPending: hasPendingPairing(),
+      pairing: { mode: pairingMode(), approver: approverNow() },
+    };
+  }
+
+  async function invokeOn(
+    link: ExtensionLink | null,
+    action: string,
+    input?: unknown,
+    opts?: { saveTo?: { dir: string; filename: string }; tabId?: number; runId?: string; hosts?: readonly string[] },
+  ) {
+    if (action.startsWith(RESERVED_PREFIX)) {
+      return failure('UNKNOWN_ACTION', `Unknown action "${action}".`);
+    }
+    if (action === 'page.listDownloads') return listDownloads(input);
+    const resolved = resolveAttachment(action, input);
+    if (!resolved.ok) return resolved;
+    if (!link?.isOpen) {
+      return failure(
+        'EXTENSION_OFFLINE',
+        'The Browsentic extension is not connected — open your browser with the extension loaded, then retry',
+      );
+    }
+    const route = { tabId: opts?.tabId, runId: opts?.runId };
+    const result =
+      action === solveCaptcha.name
+        ? await solveCaptchaWithAnalyst((next) => link.invoke(action, next, route), resolved.data, readAgentConfig())
+        : await link.invoke(action, resolved.data, route);
+    return persistDownload(action, persistScreenshot(action, input, result, opts?.saveTo), opts?.hosts);
+  }
+
+  async function invokeExternal(
+    target: ExtensionLink | null,
+    action: string,
+    input: unknown,
+    client: string,
+  ): Promise<ActionResult> {
+    const toolId = randomUUID();
+    const tell = (event: RunEvent) => {
+      if (target?.isOpen) target.send({ t: 'run', id: EXTERNAL_RUN_ID, event });
+    };
+    tell({ kind: 'tool', toolId, action, input, source: 'external' });
+
+    // An external MCP client has no run and no approval channel, so it is unscoped and
+    // its confirms resolve through the policy's `unattended` setting.
+    const config = readAgentConfig();
+    const decision = decide(
+      { action, input, caller: 'external', scope: ANYWHERE },
+      policyFrom(config.guardrails, config.requireApproval),
+    );
+    if (decision.effect === 'deny') {
+      log(`external ${client} → ${action} blocked: ${describeDecision(decision)}`);
+      tell({ kind: 'toolResult', toolId, ok: false, summary: `blocked: ${summarizeDecision(decision)}` });
+      return blocked(decision);
+    }
+    if (decision.matched.length) {
+      log(`external ${client} → ${action} waived: ${describeDecision(decision)}`);
+    }
+
+    const result = await invokeOn(target, action, input);
+    log(`external ${client} → ${action} ${result.ok ? 'ok' : result.error.code}`);
+    tell({
+      kind: 'toolResult',
+      toolId,
+      ok: result.ok,
+      summary: result.ok ? 'ok' : sealSecrets(`${result.error.code}: ${result.error.message}`),
+    });
+    return result;
+  }
+
+  function scheduleIdleExit(): void {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (!idleExit) return;
+    if (openLinks().length || controls.size > 0) return;
+    idleTimer = setTimeout(() => {
+      if (openLinks().length || controls.size > 0) return scheduleIdleExit();
+      log('idle with no clients; exiting');
+      void stop().then(() => process.exit(0));
+    }, IDLE_EXIT_MS);
+    idleTimer.unref();
+  }
+
+  async function stop(): Promise<void> {
+    if (idleTimer) clearTimeout(idleTimer);
+    clearInterval(reregistering);
+    scheduler.stop();
+    unwatchConfig();
+    for (const watcher of [...androidWatches.keys()]) unwatchAndroid(watcher);
+    await android.stop();
+    for (const link of [...links.values()]) link.close('daemon shutting down');
+    for (const ws of controls) ws.close(1001, 'daemon shutting down');
+    wss.close();
+    await new Promise<void>((resolve) => http.close(() => resolve()));
+    if (readLockfile()?.pid === process.pid) clearLockfile();
+    log('daemon stopped');
+  }
+
+  const local: Binding = { usedAt: 0 };
+  return {
+    port,
+    describe: async () => describeFor(undefined, local),
+    invoke: (action, input) => invokeOn(routeFor(local), action, input),
+    status: async () => statusNow(routeFor(local)),
+    onManifestChanged: (listener) => manifestListeners.add(listener),
+    close: stop,
+    stop,
+  };
+}
+
+function listen(http: Server): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const remaining = [...daemonPorts];
+    const attempt = () => {
+      const port = remaining.shift();
+      if (port === undefined) {
+        reject(new Error(`No free port in ${daemonPorts.join(', ')} — another process is using them all`));
+        return;
+      }
+      const onListening = () => {
+        http.removeListener('error', onError);
+        resolve((http.address() as AddressInfo).port);
+      };
+      const onError = (error: NodeJS.ErrnoException) => {
+        http.removeListener('listening', onListening);
+        if (error.code !== 'EADDRINUSE') return reject(error);
+        http.removeListener('error', onError);
+        attempt();
+      };
+      http.once('error', onError);
+      http.once('listening', onListening);
+      http.listen(port, '127.0.0.1');
+    };
+    attempt();
+  });
+}
+
+/**
+ * A page rebound to 127.0.0.1 by its own DNS still arrives with the attacker's `Host`, so this is
+ * the second lock on the door the `Origin` check already guards.
+ */
+function fromLoopback(req: IncomingMessage): boolean {
+  return LOOPBACK_HOST.test(req.headers.host ?? '');
+}
+
+function nextFrame(ws: WebSocket): Promise<SocketFrame | null> {
+  return new Promise((resolve) => {
+    const settle = (frame: SocketFrame | null) => {
+      clearTimeout(timer);
+      ws.off('message', onMessage);
+      resolve(frame);
+    };
+    const onMessage = (raw: unknown) => settle(parseFrame(String(raw)));
+    const timer = setTimeout(() => settle(null), HANDSHAKE_TIMEOUT_MS);
+    ws.once('message', onMessage);
+  });
+}
+
+function refuseUpgrade(socket: Duplex, reason: string): void {
+  socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\nX-Browsentic-Reason: ${reason}\r\n\r\n`);
+  socket.destroy();
+}

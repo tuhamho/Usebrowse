@@ -1,0 +1,953 @@
+import { browser } from 'wxt/browser';
+import { hashManifest } from '@/lib/actions/manifest';
+import { describeOwnActions } from '@/lib/bridge/own-actions';
+import {
+  clientProof,
+  isNonce,
+  newNonce,
+  openSessionKey,
+  pairingSecret,
+  sameProof,
+  serverProof,
+  type Transcript,
+} from '@/lib/actions/handshake';
+import {
+  ANDROID_PROTOCOL,
+  DAEMON_PORTS,
+  SOCKET_PROTOCOL_VERSION,
+  failure,
+  parseFrame,
+  type ActionResult,
+  type RecordingAnalysis,
+  type RecordingPayload,
+  type RunContext,
+  type RunEvent,
+  type SavedSkill,
+  type SkillCatalog,
+  type SocketFrame,
+} from '@/lib/actions/protocol';
+import type { AgentKind, AgentState } from '@/lib/agents/catalog';
+import type { AndroidState, PhoneClosedReason, PhoneOpened } from '@/lib/phone/types';
+import type { FileReport } from '@/lib/files/report';
+import type { PreferenceChange, Preferences } from '@/lib/settings/preferences';
+import type { SkillDraft } from '@/lib/skills/format';
+import type { SiteMapDraft } from '@/lib/skills/site-map';
+import type { TaskList, TaskOrder, TaskResult } from '@/lib/schedules/task';
+import type { Approver, PairingMode, RefusalCode } from '@/lib/pairing';
+import { NOTICE_PROTOCOL, type DeviceNotice } from '@/lib/notices';
+import { identify } from './identity';
+import type { BridgeReach } from './native-pair';
+import { invokeForHarness } from './invoke';
+import { wakeDaemon } from './native-wake';
+
+export const DAEMON_STATE_KEY = 'browsentic/daemon';
+export const RECONNECT_ALARM = 'browsentic/reconnect';
+export const TASKS_KEY = 'browsentic/tasks';
+const SESSION_KEY_STORE = 'browsentic/sessionKey';
+/** Set when the Bridge said it holds no session for the stored key: kept until a new one replaces it, but no longer worth dialling with. */
+const STALE_KEY_STORE = 'browsentic/staleKey';
+
+const BASE_DELAY_MS = 1_000;
+const MAX_DELAY_MS = 30_000;
+const STABLE_AFTER_MS = 30_000;
+const HANDSHAKE_TIMEOUT_MS = 5_000;
+const PAIRING_TIMEOUT_MS = 20_000;
+const WOKEN_RETRY_MS = 500;
+
+/** The secret itself stays here; only a proof derived from it ever reaches the socket. */
+interface Credential {
+  kind: 'pair' | 'session';
+  secret: string;
+}
+
+interface Refusal {
+  reason: string;
+  retryable: boolean;
+  code?: RefusalCode;
+}
+
+interface Attempt {
+  credential: Credential;
+  port: number;
+  hello: { extensionVersion: string; manifestHash: string; nonce: string };
+  serverNonce?: string;
+  secret?: string;
+  done(): void;
+  /** Abandon this port and try the next one, because the peer never proved it is the daemon. */
+  walk(refusal?: Refusal): void;
+}
+
+export interface DaemonState {
+  connected: boolean;
+  paired: boolean;
+  port?: number;
+  daemonVersion?: string;
+  /** What the Bridge speaks. Absent from a Bridge before 0.8, which speaks 22 or less. */
+  protocolVersion?: number;
+  manifestInSync?: boolean;
+  /** Which agent CLI the daemon runs, and what each one's state is. Pushed on connect. */
+  agent?: AgentState;
+  /** What the / picker offers: the daemon's skills plus the active agent CLI's own. Pushed on connect and when either changes. */
+  skillCatalog?: SkillCatalog;
+  /** The settings config.json holds for every surface. Pushed on connect and whenever the file changes. */
+  preferences?: Preferences;
+  /** The phones the Bridge sees. Pushed only by a Bridge that speaks Android, on connect and on every change. */
+  android?: AndroidState;
+  error?: string;
+  /** Whether this browser can reach Browsentic Bridge's native host. Absent until it has been asked. */
+  bridge?: BridgeReach;
+  /** Where pairing by itself stands, while this browser is not paired. */
+  pairing?: PairingState;
+  lastChangeAt: number;
+}
+
+export interface PairingState {
+  mode?: PairingMode;
+  /** Waiting for someone to allow this browser, in the app or in a terminal. */
+  wait?: { approver: Approver };
+  /** This computer unpaired or turned down this browser; only Reconnect or a code brings it back. */
+  blocked?: 'revoked' | 'denied';
+  /** The user pressed Disconnect here, so it does not pair again by itself. */
+  manual?: boolean;
+  error?: string;
+}
+
+let socket: WebSocket | null = null;
+let welcomedSocket: WebSocket | null = null;
+let daemonProtocol = 0;
+let attempts = 0;
+let connecting: Promise<void> | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let stableTimer: ReturnType<typeof setTimeout> | undefined;
+let runListener: ((runId: string, event: RunEvent) => void) | null = null;
+const welcomeListeners = new Set<(daemonVersion: string) => void>();
+let draftListener: ((runId: string, draft: SiteMapDraft) => void) | null = null;
+let taskRunner: ((order: TaskOrder) => Promise<ActionResult>) | null = null;
+let preferencesListener: ((preferences: Preferences) => void) | null = null;
+const staleKeyListeners = new Set<() => void>();
+
+export type CdpEvent = Extract<SocketFrame, { t: 'cdpEvent' }>;
+
+const cdpListeners = new Set<(event: CdpEvent) => void>();
+const phoneClosedListeners = new Set<(serial: string, reason: PhoneClosedReason) => void>();
+const closedListeners = new Set<() => void>();
+const openNoticeListeners = new Set<(noticeId: string) => void>();
+const pendingNotices = new Map<string, (delivered: boolean) => void>();
+/** The Bridge answers at once; past this the browser shows its own card instead. */
+const NOTICE_TIMEOUT_MS = 3_000;
+
+const listen = <T>(listeners: Set<T>, listener: T): (() => void) => {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+};
+
+export const onCdpEvent = (listener: (event: CdpEvent) => void) => listen(cdpListeners, listener);
+export const onPhoneClosed = (listener: (serial: string, reason: PhoneClosedReason) => void) => listen(phoneClosedListeners, listener);
+/** The link to a Bridge that had welcomed us went down. */
+export const onDaemonClosed = (listener: () => void) => listen(closedListeners, listener);
+
+export function onPreferences(listener: (preferences: Preferences) => void): void {
+  preferencesListener = listener;
+}
+
+export function onTaskOrder(runner: (order: TaskOrder) => Promise<ActionResult>): void {
+  taskRunner = runner;
+}
+
+export function onSiteMapDraft(listener: (runId: string, draft: SiteMapDraft) => void): void {
+  draftListener = listener;
+}
+
+export function onRunEvent(listener: (runId: string, event: RunEvent) => void): void {
+  runListener = listener;
+}
+
+/** The Bridge proved itself and does not know the stored key: a wiped or reinstalled Bridge, to pair with again. */
+export const onStaleKey = (listener: () => void) => listen(staleKeyListeners, listener);
+
+export async function sessionKeyUsable(): Promise<boolean> {
+  const stored = await browser.storage.session.get(STALE_KEY_STORE);
+  return !stored[STALE_KEY_STORE] && !!(await storedSessionKey());
+}
+
+export function onWelcome(listener: (daemonVersion: string) => void): void {
+  welcomeListeners.add(listener);
+}
+
+export function sendInstruction(text: string, context?: RunContext): string | null {
+  const id = crypto.randomUUID();
+  return post({ t: 'instruct', id, text, context }) ? id : null;
+}
+
+const ANALYZE_TIMEOUT_MS = 90_000;
+
+const pendingAnalyses = new Map<string, (result: ActionResult<FileReport>) => void>();
+
+export function analyzeFile(
+  file: Omit<Extract<SocketFrame, { t: 'analyzeFile' }>, 't' | 'id'>,
+): Promise<ActionResult<FileReport>> {
+  const id = crypto.randomUUID();
+  if (!post({ t: 'analyzeFile', id, ...file })) {
+    return Promise.resolve(failure('EXTENSION_OFFLINE', 'No Browsentic daemon is attached — pair the browser first.'));
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingAnalyses.delete(id);
+      resolve(failure('TIMEOUT', 'The daemon did not return a report in time.'));
+    }, ANALYZE_TIMEOUT_MS);
+    pendingAnalyses.set(id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+/** Stops the analyst reading a file that is going away. Nothing to stop when the daemon is gone. */
+export function cancelAnalysis(fileId: string): void {
+  post({ t: 'cancelAnalysis', id: crypto.randomUUID(), fileId });
+}
+
+const RECORDING_TIMEOUT_MS = 120_000;
+
+const pendingRecordings = new Map<string, (result: ActionResult<RecordingAnalysis>) => void>();
+
+export function analyzeRecording(recording: RecordingPayload): Promise<ActionResult<RecordingAnalysis>> {
+  const id = crypto.randomUUID();
+  if (!post({ t: 'analyzeRecording', id, recording })) {
+    return Promise.resolve(failure('EXTENSION_OFFLINE', 'No Browsentic daemon is attached — pair the browser first.'));
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingRecordings.delete(id);
+      resolve(failure('TIMEOUT', 'The daemon did not return a workflow in time.'));
+    }, RECORDING_TIMEOUT_MS);
+    pendingRecordings.set(id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+const TITLE_TIMEOUT_MS = 20_000;
+
+/** Someone clicked a notice the Browsentic app showed for this browser. */
+export const onOpenNotice = (listener: (noticeId: string) => void) => listen(openNoticeListeners, listener);
+
+/** True when the Browsentic app took the notice to show as the computer's own; false sends the caller to its own card. */
+export function sendNotice(notice: DeviceNotice): Promise<boolean> {
+  const id = crypto.randomUUID();
+  if (!daemonSpeaks(NOTICE_PROTOCOL) || !post({ t: 'notice', id, notice })) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingNotices.delete(id);
+      resolve(false);
+    }, NOTICE_TIMEOUT_MS);
+    pendingNotices.set(id, (delivered) => {
+      clearTimeout(timer);
+      resolve(delivered);
+    });
+  });
+}
+
+const pendingSessionNames = new Map<string, (result: ActionResult<{ title: string }>) => void>();
+
+export function nameSession(session: { host?: string; messages: string[] }): Promise<ActionResult<{ title: string }>> {
+  const id = crypto.randomUUID();
+  if (!post({ t: 'nameSession', id, ...session })) {
+    return Promise.resolve(failure('EXTENSION_OFFLINE', 'No Browsentic daemon is attached — pair the browser first.'));
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingSessionNames.delete(id);
+      resolve(failure('TIMEOUT', 'The daemon did not return a name in time.'));
+    }, TITLE_TIMEOUT_MS);
+    pendingSessionNames.set(id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+const SKILL_TIMEOUT_MS = 15_000;
+
+const pendingSkillOps = new Map<string, (result: ActionResult<SavedSkill>) => void>();
+
+export function saveSkill(skill: SkillDraft): Promise<ActionResult<SavedSkill>> {
+  return skillOp({ t: 'saveSkill', id: crypto.randomUUID(), skill });
+}
+
+export function deleteSkill(name: string): Promise<ActionResult<SavedSkill>> {
+  return skillOp({ t: 'deleteSkill', id: crypto.randomUUID(), name });
+}
+
+export function deleteSiteMap(name: string): Promise<ActionResult<SavedSkill>> {
+  return skillOp({ t: 'deleteSiteMap', id: crypto.randomUUID(), name });
+}
+
+export function activateSiteMap(stagingId: string, exactHost = false): Promise<ActionResult<SavedSkill>> {
+  return skillOp({ t: 'activateSiteMap', id: crypto.randomUUID(), stagingId, exactHost });
+}
+
+export function discardSiteMap(stagingId: string): Promise<ActionResult<SavedSkill>> {
+  return skillOp({ t: 'discardSiteMap', id: crypto.randomUUID(), stagingId });
+}
+
+function skillOp(
+  frame: Extract<
+    SocketFrame,
+    { t: 'saveSkill' | 'deleteSkill' | 'deleteSiteMap' | 'activateSiteMap' | 'discardSiteMap' }
+  >,
+): Promise<ActionResult<SavedSkill>> {
+  if (!post(frame)) {
+    return Promise.resolve(failure('EXTENSION_OFFLINE', 'No Browsentic daemon is attached — pair the browser first.'));
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingSkillOps.delete(frame.id);
+      resolve(failure('TIMEOUT', 'The daemon did not answer in time.'));
+    }, SKILL_TIMEOUT_MS);
+    pendingSkillOps.set(frame.id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+const AGENT_TIMEOUT_MS = 20_000;
+
+const pendingAgentOps = new Map<string, (result: ActionResult<AgentState>) => void>();
+
+export function readAgentState(refresh = false): Promise<ActionResult<AgentState>> {
+  return agentOp({ t: 'agentState', id: crypto.randomUUID(), refresh });
+}
+
+export function chooseAgent(agent: AgentKind): Promise<ActionResult<AgentState>> {
+  return agentOp({ t: 'setAgent', id: crypto.randomUUID(), agent });
+}
+
+export function chooseAgentModel(agent: AgentKind, model: string | null): Promise<ActionResult<AgentState>> {
+  return agentOp({ t: 'setAgentModel', id: crypto.randomUUID(), agent, model });
+}
+
+export function setUpAgent(agent: AgentKind): Promise<ActionResult<AgentState>> {
+  return agentOp({ t: 'grantAgent', id: crypto.randomUUID(), agent });
+}
+
+function agentOp(
+  frame: Extract<SocketFrame, { t: 'agentState' | 'setAgent' | 'setAgentModel' | 'grantAgent' }>,
+): Promise<ActionResult<AgentState>> {
+  if (!post(frame)) {
+    return Promise.resolve(failure('EXTENSION_OFFLINE', 'No Browsentic daemon is attached — pair the browser first.'));
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingAgentOps.delete(frame.id);
+      resolve(failure('TIMEOUT', 'The daemon did not answer in time.'));
+    }, AGENT_TIMEOUT_MS);
+    pendingAgentOps.set(frame.id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+const pendingCatalogOps = new Map<string, (result: ActionResult<SkillCatalog>) => void>();
+
+export function readSkillCatalog(refresh = false): Promise<ActionResult<SkillCatalog>> {
+  const frame = { t: 'listSkills', id: crypto.randomUUID(), refresh } as const;
+  if (!post(frame)) {
+    return Promise.resolve(failure('EXTENSION_OFFLINE', 'No Browsentic daemon is attached — pair the browser first.'));
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingCatalogOps.delete(frame.id);
+      resolve(failure('TIMEOUT', 'The daemon did not answer in time.'));
+    }, AGENT_TIMEOUT_MS);
+    pendingCatalogOps.set(frame.id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+const pendingPreferenceOps = new Map<string, (result: ActionResult<Preferences>) => void>();
+
+export function readPreferences(): Promise<ActionResult<Preferences>> {
+  return preferenceOp({ t: 'preferences', id: crypto.randomUUID() });
+}
+
+export function setPreference(change: PreferenceChange): Promise<ActionResult<Preferences>> {
+  return preferenceOp({ t: 'setPreference', id: crypto.randomUUID(), change });
+}
+
+function preferenceOp(
+  frame: Extract<SocketFrame, { t: 'preferences' | 'setPreference' }>,
+): Promise<ActionResult<Preferences>> {
+  if (!post(frame)) {
+    return Promise.resolve(failure('EXTENSION_OFFLINE', 'No Browsentic daemon is attached — pair the browser first.'));
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingPreferenceOps.delete(frame.id);
+      resolve(failure('TIMEOUT', 'The daemon did not answer in time.'));
+    }, AGENT_TIMEOUT_MS);
+    pendingPreferenceOps.set(frame.id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+const pendingTaskOps = new Map<string, (result: ActionResult<TaskList>) => void>();
+
+type TaskOp = Extract<SocketFrame, { t: 'tasks' | 'saveTask' | 'deleteTask' | 'runTaskNow' | 'pauseTasks' }>;
+type TaskOpInput = TaskOp extends infer Frame ? (Frame extends TaskOp ? Omit<Frame, 'id'> : never) : never;
+
+export function taskOp(request: TaskOpInput): Promise<ActionResult<TaskList>> {
+  const frame = { ...request, id: crypto.randomUUID() } as TaskOp;
+  if (!post(frame)) {
+    return Promise.resolve(failure('EXTENSION_OFFLINE', 'No Browsentic daemon is attached — scheduled tasks live there, so start it or pair the browser.'));
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingTaskOps.delete(frame.id);
+      resolve(failure('TIMEOUT', 'The daemon did not answer in time.'));
+    }, AGENT_TIMEOUT_MS);
+    pendingTaskOps.set(frame.id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+export function reportTaskDone(taskId: string, result: TaskResult): boolean {
+  return post({ t: 'taskDone', id: crypto.randomUUID(), taskId, result });
+}
+
+const PHONE_OPEN_TIMEOUT_MS = 20_000;
+const PHONE_COMMAND_TIMEOUT_MS = 40_000;
+
+const pendingPhoneOps = new Map<string, (result: ActionResult<never>) => void>();
+
+type PhoneFrame = Extract<SocketFrame, { t: 'phoneOpen' | 'phoneLaunch' | 'cdp' }>;
+
+function phoneOp<T>(frame: PhoneFrame, timeoutMs: number): Promise<ActionResult<T>> {
+  if (!daemonSpeaks(ANDROID_PROTOCOL)) {
+    return Promise.resolve(failure('UNSUPPORTED', 'This Browsentic Bridge predates Android. Update it with “browsentic update”.'));
+  }
+  if (!post(frame)) return Promise.resolve(failure('EXTENSION_OFFLINE', 'No Browsentic daemon is attached — pair the browser first.'));
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingPhoneOps.delete(frame.id);
+      resolve(failure('TIMEOUT', 'Browsentic Bridge did not answer about the phone in time.'));
+    }, timeoutMs);
+    pendingPhoneOps.set(frame.id, (result) => {
+      clearTimeout(timer);
+      resolve(result as ActionResult<T>);
+    });
+  });
+}
+
+function settlePhoneOp(id: string, result: ActionResult<unknown>): void {
+  pendingPhoneOps.get(id)?.(result as ActionResult<never>);
+  pendingPhoneOps.delete(id);
+}
+
+export function openPhone(serial: string): Promise<ActionResult<PhoneOpened>> {
+  return phoneOp({ t: 'phoneOpen', id: crypto.randomUUID(), serial }, PHONE_OPEN_TIMEOUT_MS);
+}
+
+export function launchPhoneChrome(serial: string, url?: string): Promise<ActionResult<AndroidState>> {
+  return phoneOp({ t: 'phoneLaunch', id: crypto.randomUUID(), serial, url }, PHONE_COMMAND_TIMEOUT_MS);
+}
+
+export function sendCdp(
+  serial: string,
+  method: string,
+  params?: Record<string, unknown>,
+  sessionId?: string,
+  timeoutMs?: number,
+): Promise<ActionResult<Record<string, unknown>>> {
+  return phoneOp({ t: 'cdp', id: crypto.randomUUID(), serial, method, params, sessionId, timeoutMs }, (timeoutMs ?? 0) + PHONE_COMMAND_TIMEOUT_MS);
+}
+
+export function closePhone(serial: string): void {
+  if (daemonSpeaks(ANDROID_PROTOCOL)) post({ t: 'phoneClose', id: crypto.randomUUID(), serial });
+}
+
+export function cancelRun(id: string): boolean {
+  return post({ t: 'cancel', id });
+}
+
+export function sendDecision(id: string, toolId: string, allow: boolean, remember?: boolean): void {
+  post({ t: 'decision', id, toolId, allow, remember });
+}
+
+export function resetConversation(sessionId?: string): void {
+  post({ t: 'reset', sessionId });
+}
+
+function post(frame: SocketFrame): boolean {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  send(socket, frame);
+  return true;
+}
+
+/**
+ * The worker's start, the reconnect alarm and a retry routinely ask in the same instant — a woken
+ * worker always does — and two dials from one browser make the daemon supersede each in turn.
+ */
+export function connectDaemon(): Promise<void> {
+  return (connecting ??= reconnect().finally(() => (connecting = null)));
+}
+
+async function reconnect(): Promise<void> {
+  if (isLive()) return;
+  const sessionKey = await storedSessionKey();
+  if (!sessionKey) {
+    await setState({ connected: false, paired: false, error: undefined, lastChangeAt: Date.now() });
+    return;
+  }
+  // A daemon that proved itself and still refused this key will refuse it again. Wait for the user
+  // to pair rather than discarding a credential on the word of a peer that never proved anything.
+  const state = await readState();
+  if ((state && !state.paired && state.error) || isLive()) return;
+  clearTimeout(reconnectTimer);
+  dial({ kind: 'session', secret: sessionKey }, DAEMON_PORTS, 0);
+}
+
+export async function pairDaemon(pairingToken: string): Promise<{ ok: boolean; error?: string }> {
+  const code = pairingToken.replace(/[\s-]/g, '').toUpperCase();
+  if (!code) return { ok: false, error: 'Enter the pairing code from "browsentic pair".' };
+
+  disconnectSocket();
+  clearTimeout(reconnectTimer);
+  attempts = 0;
+  return pairWith(code, DAEMON_PORTS);
+}
+
+/**
+ * Redeems a grant the native host handed over: never typed, so never normalised, and tried first on the
+ * port of the Bridge that issued it, which may not be the first one answering.
+ */
+export function redeemGrant(code: string, port: number): Promise<{ ok: boolean; error?: string }> {
+  disconnectSocket();
+  clearTimeout(reconnectTimer);
+  attempts = 0;
+  return pairWith(code, [port, ...DAEMON_PORTS.filter((other) => other !== port)]);
+}
+
+function pairWith(code: string, ports: readonly number[]): Promise<{ ok: boolean; error?: string }> {
+  settlePairing({ ok: false, error: 'Superseded by a newer pairing attempt.' });
+  return new Promise((resolve) => {
+    pairingResult = resolve;
+    dial({ kind: 'pair', secret: code }, ports, 0);
+    pairingTimer = setTimeout(
+      () => settlePairing({ ok: false, error: 'No Browsentic daemon is running. Start one with "browsentic pair".' }),
+      PAIRING_TIMEOUT_MS,
+    );
+  });
+}
+
+export async function disconnectDaemon(): Promise<void> {
+  clearTimeout(reconnectTimer);
+  disconnectSocket();
+  await browser.storage.local.remove(SESSION_KEY_STORE);
+  await browser.storage.session.remove(STALE_KEY_STORE);
+  await setState({ connected: false, paired: false, error: undefined, agent: undefined, android: undefined, lastChangeAt: Date.now() });
+}
+
+/** An update may be what a refusal was waiting for, so the link is tried again with the key it has. */
+export async function retryAfterUpdate(): Promise<void> {
+  const state = await readState();
+  if (state && !state.paired && state.error) await setState({ error: undefined, lastChangeAt: Date.now() });
+  await connectDaemon();
+}
+
+export const pairingNow = async (): Promise<PairingState | undefined> => (await readState())?.pairing;
+
+/** Where pairing by itself stands, for the surfaces to show while this browser is not paired. */
+export const reportPairing = (bridge: BridgeReach | undefined, pairing: PairingState | undefined): Promise<void> =>
+  setState({ bridge, pairing, lastChangeAt: Date.now() });
+
+let pairingResult: ((result: { ok: boolean; error?: string }) => void) | null = null;
+let pairingTimer: ReturnType<typeof setTimeout> | undefined;
+
+function settlePairing(result: { ok: boolean; error?: string }): void {
+  clearTimeout(pairingTimer);
+  pairingResult?.(result);
+  pairingResult = null;
+}
+
+function isLive(): boolean {
+  return !!socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING);
+}
+
+function disconnectSocket(): void {
+  const closing = socket;
+  socket = null;
+  if (!closing) return;
+  closing.onopen = null;
+  closing.onmessage = null;
+  closing.onclose = null;
+  clearTimeout(stableTimer);
+  try {
+    closing.close(1000, 'client disconnecting');
+  } catch {
+  }
+}
+
+function dial(credential: Credential, ports: readonly number[], portIndex: number, carried?: Refusal): void {
+  if (portIndex >= ports.length) return giveUp(credential, carried);
+
+  const port = ports[portIndex];
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/extension`);
+  socket = ws;
+  let settled = false;
+  let welcomed = false;
+  let refusal = carried;
+
+  const attempt: Attempt = {
+    credential,
+    port,
+    hello: {
+      extensionVersion: browser.runtime.getManifest().version,
+      manifestHash: hashManifest(describeOwnActions()),
+      nonce: newNonce(),
+    },
+    done() {
+      settled = true;
+      welcomed = true;
+      clearTimeout(handshakeTimer);
+    },
+    walk(why) {
+      if (settled) return;
+      settled = true;
+      refusal = why ?? carried;
+      clearTimeout(handshakeTimer);
+      try {
+        ws.close(1000, 'unproven daemon');
+      } catch {
+      }
+    },
+  };
+
+  const handshakeTimer = setTimeout(() => attempt.walk(), HANDSHAKE_TIMEOUT_MS);
+
+  ws.onopen = () => {
+    void identify()
+      .then((identity) =>
+        send(ws, {
+          t: 'hello',
+          protocolVersion: SOCKET_PROTOCOL_VERSION,
+          extensionVersion: attempt.hello.extensionVersion,
+          manifestHash: attempt.hello.manifestHash,
+          auth: { kind: credential.kind },
+          nonce: attempt.hello.nonce,
+          ...identity,
+        }),
+      )
+      .catch(() => attempt.walk());
+  };
+
+  ws.onmessage = (event) => {
+    void handle(ws, String(event.data), attempt);
+  };
+
+  ws.onclose = (event) => {
+    clearTimeout(handshakeTimer);
+    // A socket a newer dial replaced speaks for nothing: its close must not mark the live link down.
+    if (socket !== ws) return;
+    socket = null;
+    clearTimeout(stableTimer);
+    // A daemon that refuses the handshake outright — a protocol mismatch above all — says why in
+    // the close frame and never sends an `unauthorized`. Without this the walk ends on the generic
+    // "no daemon is running", which sends the user hunting for a process that is running fine.
+    refusal ??= closeRefusal(event);
+    // Nothing on this port ever proved itself — a squatter, a stale daemon, an empty port — so the
+    // walk continues instead of pinning the extension to whoever answered first.
+    if (!welcomed) return dial(credential, ports, portIndex + 1, refusal);
+    void setState({ connected: false, paired: true, error: undefined, android: undefined, lastChangeAt: Date.now() });
+    for (const [id] of pendingPhoneOps) settlePhoneOp(id, failure('PHONE_GONE', 'The link to Browsentic Bridge went down.'));
+    for (const listener of closedListeners) listener();
+    // A link opened by a code or a grant was welcomed with a session key, so it comes back on that key like any other.
+    scheduleRetry();
+  };
+}
+
+const OWN_CLOSE = new Set(['unproven daemon', '']);
+
+function closeRefusal(event: CloseEvent): Refusal | undefined {
+  const reason = event.reason?.trim();
+  if (!reason || OWN_CLOSE.has(reason)) return undefined;
+  return /protocol version mismatch/i.test(reason) ? { reason, retryable: false } : { reason, retryable: true };
+}
+
+function giveUp(credential: Credential, refusal?: Refusal): void {
+  if (refusal && !refusal.retryable) {
+    settlePairing({ ok: false, error: refusal.reason });
+    void refuse(credential, refusal);
+    return;
+  }
+  settlePairing({ ok: false, error: refusal?.reason ?? 'No Browsentic daemon is running.' });
+  if (credential.kind !== 'session') return;
+  if (refusal) return scheduleRetry();
+  void wakeDaemon().then((woken) => {
+    if (!woken) return scheduleRetry();
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => void connectDaemon(), WOKEN_RETRY_MS);
+  });
+}
+
+async function refuse(credential: Credential, refusal: Refusal): Promise<void> {
+  const reason = await adviceFor(refusal.reason);
+  const blocked = credential.kind === 'session' && refusal.code === 'revoked' ? { pairing: { blocked: 'revoked' as const } } : {};
+  await setState({ connected: false, paired: false, error: reason, ...blocked, lastChangeAt: Date.now() });
+  if (credential.kind !== 'session' || (refusal.code !== 'unknown' && refusal.code !== 'revoked')) return;
+  // Either way the Bridge holds no session for this key; only a Bridge that forgot it is paired with again unasked.
+  await browser.storage.session.set({ [STALE_KEY_STORE]: true });
+  if (refusal.code === 'unknown') for (const listener of staleKeyListeners) listener();
+}
+
+/** A store copy cannot be rebuilt: it is told the store update is on its way, and the store is asked for it now. */
+async function adviceFor(reason: string): Promise<string> {
+  if (!/protocol version mismatch/i.test(reason)) return reason;
+  const unpacked = (await browser.management.getSelf().catch(() => null))?.installType === 'development';
+  if (unpacked) return `${reason}. Rebuild and reload the extension — “yarn build”, then Reload at chrome://extensions.`;
+  if (!import.meta.env.FIREFOX) await browser.runtime.requestUpdateCheck().catch(() => undefined);
+  return `${reason}. This copy of Browsentic is older than Browsentic Bridge; the browser installs its update shortly.`;
+}
+
+function transcriptOf(attempt: Attempt): Transcript {
+  return {
+    protocolVersion: SOCKET_PROTOCOL_VERSION,
+    extensionVersion: attempt.hello.extensionVersion,
+    manifestHash: attempt.hello.manifestHash,
+    clientNonce: attempt.hello.nonce,
+    serverNonce: attempt.serverNonce ?? '',
+  };
+}
+
+async function handle(ws: WebSocket, raw: string, attempt: Attempt): Promise<void> {
+  const frame = parseFrame(raw);
+  if (!frame) return;
+  switch (frame.t) {
+    case 'ping':
+      return send(ws, { t: 'pong', id: frame.id });
+
+    case 'challenge': {
+      if (!isNonce(frame.nonce) || attempt.serverNonce) return attempt.walk();
+      attempt.serverNonce = frame.nonce;
+      const transcript = transcriptOf(attempt);
+      attempt.secret =
+        attempt.credential.kind === 'pair'
+          ? await pairingSecret(attempt.credential.secret, transcript)
+          : attempt.credential.secret;
+      return send(ws, { t: 'prove', proof: await clientProof(attempt.secret, transcript) });
+    }
+
+    // Nothing has proved itself yet, so this is a claim, not a verdict: note it and try the next port.
+    case 'unauthorized':
+      return attempt.walk({ reason: frame.reason, retryable: frame.retryable !== false, code: frame.code });
+
+    case 'welcome': {
+      const secret = attempt.secret;
+      if (!secret) return attempt.walk();
+      const transcript = transcriptOf(attempt);
+      const sealed = frame.sealedSessionKey ?? '';
+      if (!sameProof(frame.proof, await serverProof(secret, transcript, frame))) {
+        return attempt.walk({
+          reason: `Whatever is listening on port ${attempt.port} could not prove it is the Browsentic daemon.`,
+          retryable: true,
+        });
+      }
+      const sessionKey = sealed ? await openSessionKey(secret, transcript, sealed) : null;
+      if (!sessionKey && (sealed || attempt.credential.kind === 'pair')) return attempt.walk();
+      if (ws !== socket) return attempt.walk();
+
+      attempt.done();
+      welcomedSocket = ws;
+      daemonProtocol = frame.protocolVersion ?? 0;
+      // A link that is welcomed and then dropped at once has not recovered, and forgetting the
+      // backoff on the welcome alone lets two peers take the link from each other every second.
+      clearTimeout(stableTimer);
+      stableTimer = setTimeout(() => (attempts = 0), STABLE_AFTER_MS);
+      if (sessionKey) {
+        await browser.storage.local.set({ [SESSION_KEY_STORE]: sessionKey });
+        await browser.storage.session.remove(STALE_KEY_STORE);
+      }
+      settlePairing({ ok: true });
+      await setState({
+        connected: true,
+        paired: true,
+        port: attempt.port,
+        daemonVersion: frame.daemonVersion,
+        protocolVersion: frame.protocolVersion,
+        manifestInSync: frame.manifestInSync,
+        error: undefined,
+        bridge: undefined,
+        pairing: undefined,
+        lastChangeAt: Date.now(),
+      });
+      for (const listener of welcomeListeners) listener(frame.daemonVersion);
+      return;
+    }
+
+    case 'describe':
+      return send(ws, { t: 'manifest', id: frame.id, tools: describeOwnActions() });
+
+    case 'invoke':
+      return send(ws, {
+        t: 'result',
+        id: frame.id,
+        result: await invokeForHarness(frame.action, frame.input, frame.tabId, frame.runId),
+      });
+
+    case 'run':
+      return runListener?.(frame.id, frame.event);
+
+    case 'fileReport': {
+      pendingAnalyses.get(frame.id)?.(frame.result);
+      pendingAnalyses.delete(frame.id);
+      return;
+    }
+
+    case 'skillResult': {
+      pendingSkillOps.get(frame.id)?.(frame.result);
+      pendingSkillOps.delete(frame.id);
+      return;
+    }
+
+    case 'noticeAck': {
+      pendingNotices.get(frame.id)?.(frame.delivered === true);
+      pendingNotices.delete(frame.id);
+      return;
+    }
+
+    case 'openNotice':
+      for (const listener of openNoticeListeners) listener(frame.noticeId);
+      return;
+
+    case 'sessionName': {
+      pendingSessionNames.get(frame.id)?.(frame.result);
+      pendingSessionNames.delete(frame.id);
+      return;
+    }
+
+    case 'recordingWorkflow': {
+      pendingRecordings.get(frame.id)?.(frame.result);
+      pendingRecordings.delete(frame.id);
+      return;
+    }
+
+    case 'agentInfo': {
+      pendingAgentOps.get(frame.id)?.(frame.result);
+      pendingAgentOps.delete(frame.id);
+      if (frame.result.ok) await setState({ agent: frame.result.data, lastChangeAt: Date.now() });
+      return;
+    }
+
+    case 'preferencesInfo': {
+      if (frame.result.ok) await setState({ preferences: frame.result.data, lastChangeAt: Date.now() });
+      pendingPreferenceOps.get(frame.id)?.(frame.result);
+      pendingPreferenceOps.delete(frame.id);
+      if (frame.result.ok) preferencesListener?.(frame.result.data);
+      return;
+    }
+
+    case 'skillCatalog': {
+      pendingCatalogOps.get(frame.id)?.(frame.result);
+      pendingCatalogOps.delete(frame.id);
+      if (frame.result.ok) await setState({ skillCatalog: frame.result.data, lastChangeAt: Date.now() });
+      return;
+    }
+
+    case 'siteMapDraft':
+      return draftListener?.(frame.id, frame.draft);
+
+    case 'androidInfo': {
+      if (frame.id) settlePhoneOp(frame.id, frame.result);
+      if (frame.result.ok) await setState({ android: frame.result.data, lastChangeAt: Date.now() });
+      return;
+    }
+
+    case 'phoneOpened':
+    case 'cdpResult':
+      return settlePhoneOp(frame.id, frame.result);
+
+    case 'cdpEvent':
+      for (const listener of cdpListeners) listener(frame);
+      return;
+
+    case 'phoneClosed':
+      for (const listener of phoneClosedListeners) listener(frame.serial, frame.reason);
+      return;
+
+    case 'taskList': {
+      pendingTaskOps.get(frame.id)?.(frame.result);
+      pendingTaskOps.delete(frame.id);
+      if (frame.result.ok) await browser.storage.local.set({ [TASKS_KEY]: frame.result.data });
+      return;
+    }
+
+    case 'runTask':
+      return send(ws, {
+        t: 'result',
+        id: frame.id,
+        result: taskRunner
+          ? await taskRunner(frame.order).catch((error) => failure('BRIDGE_ERROR', String(error)))
+          : failure('UNSUPPORTED', 'This browser is not ready to run scheduled tasks yet.'),
+      });
+
+    default:
+      return;
+  }
+}
+
+/** Held back until the daemon has welcomed us: mid-handshake it would be read as the proof. */
+export function reportFocus(): void {
+  if (isWelcomed()) post({ t: 'focus' });
+}
+
+export function daemonSpeaks(version: number): boolean {
+  return isWelcomed() && daemonProtocol >= version;
+}
+
+function isWelcomed(): boolean {
+  return !!socket && socket === welcomedSocket;
+}
+
+function send(ws: WebSocket, frame: SocketFrame): void {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+}
+
+function scheduleRetry(): void {
+  const backoff = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempts++);
+  const delay = backoff * (0.5 + Math.random() / 2);
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => void connectDaemon(), delay);
+}
+
+async function readState(): Promise<DaemonState | undefined> {
+  const stored = await browser.storage.session.get(DAEMON_STATE_KEY);
+  return stored[DAEMON_STATE_KEY] as DaemonState | undefined;
+}
+
+let stateQueue: Promise<unknown> = Promise.resolve();
+
+/** One writer at a time: the agent and skill pushes right behind a welcome must not write back the `connected` they read before it. */
+function setState(patch: Partial<DaemonState> & { lastChangeAt: number }): Promise<void> {
+  const write = async () => {
+    const current = (await readState()) ?? { connected: false, paired: false, lastChangeAt: 0 };
+    await browser.storage.session.set({ [DAEMON_STATE_KEY]: { ...current, ...patch } });
+  };
+  const run = stateQueue.then(write, write);
+  stateQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function storedSessionKey(): Promise<string | null> {
+  const stored = await browser.storage.local.get(SESSION_KEY_STORE);
+  const key = stored[SESSION_KEY_STORE];
+  return typeof key === 'string' && key ? key : null;
+}

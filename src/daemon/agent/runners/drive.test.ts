@@ -1,0 +1,452 @@
+import { once } from 'node:events';
+import { existsSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Readable } from 'node:stream';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import type { RunEvent } from '@/lib/actions/protocol';
+import { AGENTS } from '@/lib/agents/catalog';
+import { logPath, stateDir } from '../../lockfile';
+import { configPath } from '../config';
+import { antigravityRunner } from './antigravity';
+import { codexRunner } from './codex';
+import { cursorRunner } from './cursor';
+import { launch, runJson, runStream } from './drive';
+import { jsonContext, streamContext, stubCli } from './fixtures/support';
+import { RunError, type Plan, type Runner, type StreamReader, type StreamSink } from './types';
+import { bits, modeOf } from '../../test/modes';
+
+/** Each line the stand-in prints is one sink call, as JSON: ["text", "hello"]. */
+const replay: StreamReader = (line, sink) => {
+  const [signal, ...args] = JSON.parse(line) as [keyof StreamSink, ...unknown[]];
+  (sink[signal] as (...values: unknown[]) => void)(...args);
+};
+
+/**
+ * Antigravity's real plans with a Node script in place of the CLI. Its containment only asks for
+ * the two workspace files those plans write, so the stand-in passes the same vetting a real run does.
+ */
+const standIn = (script: string, plan: (real: Plan) => Plan = (real) => real): Runner => ({
+  ...antigravityRunner,
+  stream: (context) => plan({ ...antigravityRunner.stream(context), args: ['-e', script] }),
+  json: (context) => plan({ ...antigravityRunner.json(context), args: ['-e', script] }),
+  reader: () => replay,
+});
+
+const printing = (...lines: unknown[]) =>
+  `for (const line of ${JSON.stringify(lines.map((line) => (typeof line === 'string' ? line : JSON.stringify(line))))}) console.log(line);`;
+
+const node = { bin: process.execPath };
+
+/** Browser tools with nothing in them, for a runner that asks for its own. */
+const noTools = async () => ({ list: async () => ({ tools: [], withheld: [], groups: [] }), call: async () => ({ content: [] }) });
+
+const run = async (
+  runner: Runner,
+  { runId = 'drive-run', conversation = 'conversation-1', signal = new AbortController().signal, bin = node.bin } = {},
+) => {
+  const events: RunEvent[] = [];
+  const context = streamContext({ bin }, { runId, conversation, tools: noTools });
+  const outcome = await runStream(runner, context, signal, (event) => events.push(event));
+  return { outcome, events, said: events.flatMap((event) => (event.kind === 'text' ? [event.delta] : [])).join('') };
+};
+
+const failure = (promise: Promise<unknown>) =>
+  promise.then(
+    () => {
+      throw new Error('expected the run to fail');
+    },
+    (error: unknown) => (error instanceof RunError ? { code: error.code, message: error.message } : error),
+  );
+
+const task = (runner: Runner, { signal = new AbortController().signal, bin = node.bin } = {}) =>
+  runJson(runner, jsonContext({ bin }), signal, { timedOut: 'The summary took too long.', empty: 'The agent said nothing.' });
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
+
+describe('a streamed run', () => {
+  test('each line the agent prints reaches the reader in order, and the run ends where the reader says', async () => {
+    const { outcome, events } = await run(
+      standIn(
+        printing(
+          ['session', 'conv-1'],
+          '',
+          ['tool', 'search-1', 'search_web'],
+          ['usage', { contextTokens: 900, outputTokens: 12 }],
+          ['text', 'It costs $12.'],
+          ['done', 'end_turn'],
+        ),
+      ),
+    );
+    expect({ outcome, events }).toEqual({
+      outcome: { stopReason: 'end_turn', sessionId: 'conv-1' },
+      events: [
+        { kind: 'tool', toolId: 'search-1', action: 'search_web', input: {} },
+        { kind: 'usage', usage: { contextTokens: 900, outputTokens: 12 } },
+        { kind: 'text', delta: 'It costs $12.' },
+      ],
+    });
+  });
+
+  test("a plan's input reaches the agent on stdin, which is then closed, and never on its command line", async () => {
+    const script = `let heard = ''; process.stdin.on('data', (chunk) => (heard += chunk)).on('end', () => {
+      console.log(JSON.stringify(['text', heard + ' | argv:' + process.argv.slice(1).join(' ')]));
+      console.log('["done","end_turn"]');
+    });`;
+    const { said } = await run(standIn(script, (real) => ({ ...real, input: 'what does "this" page cost?\nand the next one' })));
+    expect(said).toBe('what does "this" page cost?\nand the next one | argv:');
+  });
+
+  test('an agent gone before it reads its input fails the run as usual, and the daemon carries on', async () => {
+    const script = 'process.exit(3)';
+    const refused = await failure(run(standIn(script, (real) => ({ ...real, input: 'x'.repeat(1 << 20) }))));
+    expect(refused).toMatchObject({ code: 'AGENT_FAILED' });
+  });
+
+  test('a run that never names a session reports none, so a stale one is not resumed', async () => {
+    expect((await run(standIn(printing(['done', 'end_turn'])))).outcome).toEqual({ stopReason: 'end_turn', sessionId: null });
+  });
+
+  test('a line the reader chokes on is logged and the run carries on', async () => {
+    const { said } = await run(standIn(printing('Loading model…', ['text', 'Done.'], ['done', 'end_turn'])));
+    expect([said, readFileSync(logPath, 'utf8').includes('antigravity runner could not read a stream line')]).toEqual(['Done.', true]);
+  });
+
+  test('a credential the agent repeats is sealed before the user sees it, even split across two lines', async () => {
+    const { said } = await run(
+      standIn(printing(['text', 'The key is sk-ant-api03-AbCdEfGhIj'], ['text', 'KlMnOpQrStUvWxYz012345, as asked.'], ['done', 'end_turn'])),
+    );
+    expect([said.includes('AbCdEfGhIj'), said.includes('⟦api-key:'), said.endsWith(', as asked.')]).toEqual([false, true, true]);
+  });
+
+  test("the plan's files are in the run's directory before the agent starts, readable only by the user", async () => {
+    const script = `console.log(JSON.stringify(['text', require('node:fs').readFileSync('AGENTS.md', 'utf8')])); console.log('["done","end_turn"]');`;
+    const { said } = await run(standIn(script), { conversation: 'files-conversation' });
+    const cwd = join(antigravityRunner.workspace('run'), 'files-conversation');
+    expect({
+      said,
+      directory: modeOf(cwd),
+      instructions: modeOf(join(cwd, 'AGENTS.md')),
+      mcpConfig: modeOf(join(cwd, '.agents', 'mcp_config.json')),
+    }).toEqual({ said: expect.stringMatching(/^You are Browsentic\.\n/), directory: bits(0o700), instructions: bits(0o600), mcpConfig: bits(0o600) });
+  });
+
+  test("a folder a conversation keeps is new again on every turn, so the sweep ages it from its last", async () => {
+    const cwd = join(antigravityRunner.workspace('run'), 'kept-conversation');
+    await run(standIn(printing(['done', 'end_turn'])), { runId: 'kept-1', conversation: 'kept-conversation' });
+    const nearlyADayAgo = new Date(Date.now() - 23 * 60 * 60_000);
+    utimesSync(cwd, nearlyADayAgo, nearlyADayAgo);
+    await run(standIn(printing(['done', 'end_turn'])), { runId: 'kept-2', conversation: 'kept-conversation' });
+    expect(statSync(cwd).mtimeMs).toBeGreaterThan(Date.now() - 60_000);
+  });
+
+  test('a run that finished is not undone by the exit code that follows', async () => {
+    expect((await run(standIn(`${printing(['done', 'end_turn'])} process.exitCode = 2;`))).outcome.stopReason).toBe('end_turn');
+  });
+
+  test('a failure the reader reports is the error the run ends with', async () => {
+    expect(await failure(run(standIn(printing(['fail', 'AGENT_FAILED', 'quota exceeded']))))).toEqual({
+      code: 'AGENT_FAILED',
+      message: 'quota exceeded',
+    });
+  });
+
+  test('a failure the reader reports stops the agent, rather than leaving it running unwatched', async () => {
+    const pidFile = join(stateDir, 'stopped-after-fail');
+    rmSync(pidFile, { force: true });
+    const script =
+      `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+      `${printing(['fail', 'AGENT_UNSAFE', 'offered the shell'])} setInterval(() => {}, 1000);`;
+    const refused = await failure(run(standIn(script)));
+    await vi.waitFor(() => expect(alive(Number(readFileSync(pidFile, 'utf8')))).toBe(false));
+    expect(refused).toEqual({ code: 'AGENT_UNSAFE', message: 'offered the shell' });
+  });
+
+  test("an agent that exits early fails with the runner's explanation of what it printed", async () => {
+    expect(await failure(run(standIn(`process.stderr.write('Error: no credentials found\\n'); process.exit(1);`)))).toEqual({
+      code: 'AGENT_FAILED',
+      message: 'Antigravity is installed but not signed in. Run "agy" once and complete the login, then try again. (Error: no credentials found)',
+    });
+  });
+
+  test('with no explanation to offer, the error names the agent, the exit code and what it printed', async () => {
+    expect(await failure(run(standIn(`process.stderr.write('segmentation fault\\n'); process.exit(3);`)))).toEqual({
+      code: 'AGENT_FAILED',
+      message: 'Antigravity exited with code 3 before finishing: segmentation fault',
+    });
+  });
+
+  test('an agent that exits early and silently says only that', async () => {
+    expect(await failure(run(standIn('process.exit(3);')))).toEqual({ code: 'AGENT_FAILED', message: 'Antigravity exited with code 3 before finishing' });
+  });
+
+  describe('a set-up step', () => {
+    // Cursor's real plan, whose containment allows one set-up step, run by a stand-in that notes
+    // the step in its folder and says, during the turn, what it found there.
+    const cursorStub = () =>
+      stubCli(
+        join(stateDir, 'cursor-stub'),
+        `import('node:fs').then(({ existsSync, readFileSync, writeFileSync }) => {
+          const args = process.argv.slice(2);
+          if (args[0] === 'mcp') {
+            writeFileSync('approved', args.join(' '));
+            if (process.env.STUB_REFUSES) console.error('no such server');
+            process.exit(process.env.STUB_REFUSES ? 1 : 0);
+          }
+          const approved = existsSync('approved') ? readFileSync('approved', 'utf8') : 'nothing';
+          console.log(JSON.stringify(['text', approved]));
+          console.log(JSON.stringify(['done', 'end_turn']));
+        });`,
+      );
+    const cursorStandIn: Runner = { ...cursorRunner, reader: () => replay };
+
+    test("runs in the run's folder before the turn starts", async () => {
+      const { said } = await run(cursorStandIn, { bin: cursorStub() });
+      expect(said).toBe('mcp enable browsentic');
+    });
+
+    test('that fails stops the turn before it starts, saying which step and what it printed', async () => {
+      vi.stubEnv('STUB_REFUSES', '1');
+      const { code, message } = (await failure(run(cursorStandIn, { bin: cursorStub() }))) as RunError;
+      expect([code, message.includes('"mcp enable browsentic" exited with code 1'), message.includes('no such server')]).toEqual([
+        'AGENT_FAILED',
+        true,
+        true,
+      ]);
+    });
+  });
+
+  test('a cancelled run ends as cancelled, not as a failure', async () => {
+    const controller = new AbortController();
+    const running = run(standIn(`${printing(['session', 'conv-1'])} setInterval(() => {}, 1000);`), { signal: controller.signal });
+    controller.abort();
+    expect(await failure(running)).toEqual({ code: 'CANCELLED', message: 'Run cancelled.' });
+  });
+
+  test('an agent that is not installed is missing, with how to install it or where to point Browsentic', async () => {
+    const missing = await failure(run(standIn(''), { bin: join(stateDir, 'no-such-agy') }));
+    expect(missing).toEqual({
+      code: 'AGENT_MISSING',
+      message: `Could not run "${join(stateDir, 'no-such-agy')}" — Antigravity is not installed, or not on the daemon's PATH. Install it (${AGENTS.antigravity.install}), or set {"agents":{"antigravity":{"bin":"/absolute/path/to/agy"}}} in ${configPath}.`,
+    });
+  });
+});
+
+/**
+ * A Node script in place of `codex`, so Codex's real plans are vetted and spawned as they would be.
+ * It notes each subcommand it was started with, then plays the part `behaviour` gives it.
+ */
+function codexStandIn(name: string, behaviour: string): { bin: string; started: () => string[] } {
+  const log = join(stateDir, `${name}.log`);
+  rmSync(log, { force: true });
+  const bin = stubCli(
+    join(stateDir, name),
+    `const fs = require('node:fs');\nfs.appendFileSync(${JSON.stringify(log)}, process.argv[2] + '\\n');\n${behaviour}\n`,
+  );
+  return { bin, started: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []) };
+}
+
+/** Enough of the app-server to hold one turn: each request answered, then a reply and the end of the turn. */
+const APP_SERVER = `
+if (process.argv[2] !== 'app-server') process.exit(9);
+const reply = (id, result) => console.log(JSON.stringify({ jsonrpc: '2.0', id, result }));
+const note = (method, params) => console.log(JSON.stringify({ jsonrpc: '2.0', method, params }));
+require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {
+  const { id, method } = JSON.parse(line);
+  if (method === 'initialize') reply(id, {});
+  if (method === 'config/read') reply(id, { config: {} });
+  if (method === 'thread/start') reply(id, { thread: { id: 'thread-held' } });
+  if (method === 'turn/start') {
+    reply(id, { turn: { id: 'turn-1' } });
+    note('item/agentMessage/delta', { threadId: 'thread-held', itemId: 'm1', delta: 'Held over stdin.' });
+    note('turn/completed', { threadId: 'thread-held', turn: { status: 'completed' } });
+  }
+});
+process.stdin.on('end', () => process.exit(0));
+`;
+
+const EXEC = `
+if (process.argv[2] !== 'exec') { console.error("error: unrecognized subcommand 'app-server'"); process.exit(2); }
+console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-exec' }));
+console.log(JSON.stringify({ type: 'item.completed', item: { id: 'm1', type: 'agent_message', text: 'Through exec.' } }));
+console.log(JSON.stringify({ type: 'turn.completed' }));
+`;
+
+describe('a turn held as a conversation', () => {
+  test('is spoken to over stdin, and the CLI goes when its stdin is closed', async () => {
+    const codex = codexStandIn('codex-held', APP_SERVER);
+    const { outcome, said } = await run(codexRunner, { bin: codex.bin });
+    expect([outcome, said, codex.started()]).toEqual([{ stopReason: 'end_turn', sessionId: 'thread-held' }, 'Held over stdin.', ['app-server']]);
+  });
+
+  test('a Codex with no app-server runs the same turn through exec, and its later turns go straight there', async () => {
+    const codex = codexStandIn('codex-no-app-server', EXEC);
+    const first = await run(codexRunner, { bin: codex.bin });
+    const second = await run(codexRunner, { bin: codex.bin });
+    expect([first.outcome, first.said, second.said, codex.started()]).toEqual([
+      { stopReason: 'end_turn', sessionId: 'thread-exec' },
+      'Through exec.',
+      'Through exec.',
+      ['app-server', 'exec', 'exec'],
+    ]);
+  });
+});
+
+describe('what reaches the process', () => {
+  const unsafe = (real: Plan): Plan => ({ ...real, cwd: join(stateDir, 'agents', 'unsafe-run'), files: real.files?.filter((file) => file.path !== 'AGENTS.md') });
+  const marker = join(stateDir, 'unsafe-ran');
+  const leavesMark = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
+
+  test('a plan that has lost its containment is refused before anything is spawned or written', async () => {
+    const refused = await failure(run(standIn(leavesMark, unsafe)));
+    expect([refused, existsSync(marker), existsSync(join(stateDir, 'agents', 'unsafe-run'))]).toEqual([
+      {
+        code: 'AGENT_UNSAFE',
+        message:
+          'Browsentic refused to start Antigravity: Antigravity (run) is spawned without AGENTS.md in its workspace. This is a bug in Browsentic, not something you did — please report it.',
+      },
+      false,
+      false,
+    ]);
+  });
+
+  test('a one-shot task is vetted the same way', async () => {
+    expect([await failure(task(standIn(leavesMark, unsafe))), existsSync(marker)]).toEqual([expect.objectContaining({ code: 'AGENT_UNSAFE' }), false]);
+  });
+
+  const seen = `JSON.stringify({ present: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'AWS_SECRET_ACCESS_KEY', 'GEMINI_API_KEY'].filter((name) => name in process.env), run: process.env.BROWSENTIC_AGENT_RUN ?? null })`;
+
+  const withParentEnv = () => {
+    vi.stubEnv('CLAUDECODE', '1');
+    vi.stubEnv('CLAUDE_CODE_ENTRYPOINT', 'cli');
+    vi.stubEnv('BROWSENTIC_AGENT_RUN', 'the-run-that-started-this-daemon');
+    vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'aws-secret');
+    vi.stubEnv('GEMINI_API_KEY', 'gemini-key');
+  };
+
+  test("a run loses the parent agent's markers and other vendors' credentials, keeps its own, and sees its own run id", async () => {
+    withParentEnv();
+    const script = `console.log(JSON.stringify(['text', ${seen}])); console.log('["done","end_turn"]');`;
+    expect(JSON.parse((await run(standIn(script))).said)).toEqual({ present: ['GEMINI_API_KEY'], run: 'drive-run' });
+  });
+
+  test('a one-shot task gets no run id at all', async () => {
+    withParentEnv();
+    const answer = await task(standIn(`console.log(JSON.stringify({ result: { response: ${seen} } }));`));
+    expect(JSON.parse(answer)).toEqual({ present: ['GEMINI_API_KEY'], run: null });
+  });
+
+  // Windows has no signal to ask with: a stop there ends the agent and what it started at once.
+  test.skipIf(process.platform === 'win32')('aborting asks the agent to stop, and only kills it once the grace period is over', async () => {
+    const controller = new AbortController();
+    const script = `process.on('SIGTERM', () => console.log('asked to stop')); console.log('ready'); setInterval(() => {}, 1000);`;
+    const plan = { ...antigravityRunner.stream(streamContext(node, { runId: 'stubborn-run' })), args: ['-e', script] };
+    const { child } = launch('antigravity', 'run', node, plan, controller.signal);
+    await printed(child.stdout, 'ready');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const kill = vi.spyOn(child, 'kill');
+    controller.abort();
+    await printed(child.stdout, 'asked to stop');
+    vi.advanceTimersByTime(4_999);
+    const beforeGrace = kill.mock.calls.map(([signal]) => signal);
+    vi.advanceTimersByTime(1);
+    const [, signal] = await once(child, 'exit');
+
+    expect({ beforeGrace, after: kill.mock.calls.map(([sent]) => sent), signal }).toEqual({
+      beforeGrace: ['SIGTERM'],
+      after: ['SIGTERM', 'SIGKILL'],
+      signal: 'SIGKILL',
+    });
+  });
+
+  test('a run whose signal already fired is stopped the moment it starts', async () => {
+    const plan = { ...antigravityRunner.stream(streamContext(node, { runId: 'late-run' })), args: ['-e', 'setInterval(() => {}, 1000);'] };
+    const { child } = launch('antigravity', 'run', node, plan, AbortSignal.abort());
+    const [code, signal] = await once(child, 'exit');
+    expect(signal ?? code).toBe(process.platform === 'win32' ? 1 : 'SIGTERM');
+  });
+});
+
+describe('a one-shot task', () => {
+  test('the answer is what the runner reads out of what it printed', async () => {
+    expect(await task(standIn(printing({ result: { status: 'success', response: '  A pricing page.  ' } })))).toBe('A pricing page.');
+  });
+
+  test('an error in the answer fails the task with it', async () => {
+    expect(await failure(task(standIn(printing({ result: { error: 'quota exceeded' } }))))).toEqual({ code: 'AGENT_FAILED', message: 'quota exceeded' });
+  });
+
+  test("no answer, and a complaint the runner recognises, is the runner's explanation", async () => {
+    expect(await failure(task(standIn(`process.stderr.write('tool call soft-denied');`)))).toMatchObject({
+      code: 'AGENT_FAILED',
+      message: expect.stringMatching(/^Antigravity denied a tool call because it has no permission rule for Browsentic\./),
+    });
+  });
+
+  test('no answer, and a complaint it does not recognise, names the agent and repeats it', async () => {
+    expect(await failure(task(standIn(`process.stderr.write('disk full\\n');`)))).toEqual({ code: 'AGENT_FAILED', message: 'Antigravity: disk full' });
+  });
+
+  test("no answer and nothing said is the caller's own message", async () => {
+    expect(await failure(task(standIn('')))).toEqual({ code: 'AGENT_FAILED', message: 'The agent said nothing.' });
+  });
+
+  test("a task stopped by its deadline times out with the caller's message", async () => {
+    const controller = new AbortController();
+    const running = task(standIn('setInterval(() => {}, 1000);'), { signal: controller.signal });
+    controller.abort();
+    expect(await failure(running)).toEqual({ code: 'TIMEOUT', message: 'The summary took too long.' });
+  });
+
+  test('an agent that is not installed is missing', async () => {
+    expect(await failure(task(standIn(''), { bin: join(stateDir, 'no-such-agy') }))).toMatchObject({ code: 'AGENT_MISSING' });
+  });
+
+  test('an answer the caller accepts ends the task there, and the agent is stopped rather than waited out', async () => {
+    const pidFile = join(stateDir, 'stopped-after-answering');
+    rmSync(pidFile, { force: true });
+    const lingering = standIn(
+      `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+        `${printing({ result: { status: 'success', response: 'A pricing page.' } })} setInterval(() => {}, 1000);`,
+    );
+    const answer = await runJson(lingering, jsonContext(node), new AbortController().signal, {
+      timedOut: 'The summary took too long.',
+      empty: 'The agent said nothing.',
+      accept: (text) => text.endsWith('.'),
+    });
+    await vi.waitFor(() => expect(alive(Number(readFileSync(pidFile, 'utf8')))).toBe(false));
+    expect(answer).toBe('A pricing page.');
+  });
+
+  test('a task stopped for a reason of its own fails with that reason, not as a timeout', async () => {
+    const controller = new AbortController();
+    const running = task(standIn('setInterval(() => {}, 1000);'), { signal: controller.signal });
+    controller.abort(new RunError('CANCELLED', 'The file was removed before it was read.'));
+    expect(await failure(running)).toEqual({ code: 'CANCELLED', message: 'The file was removed before it was read.' });
+  });
+});
+
+function printed(stream: Readable, word: string): Promise<void> {
+  return new Promise((resolve) => {
+    let output = '';
+    const listen = (chunk: Buffer) => {
+      output += chunk.toString();
+      if (!output.includes(word)) return;
+      stream.off('data', listen);
+      resolve();
+    };
+    stream.on('data', listen);
+  });
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

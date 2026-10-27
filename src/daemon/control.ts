@@ -1,0 +1,154 @@
+import type { ActionResult } from '@/lib/actions/protocol';
+import type { ToolDescriptor } from '@/lib/actions/manifest';
+import type { AgentKind, AgentState } from '@/lib/agents/catalog';
+import type { AndroidState } from '@/lib/phone/types';
+import type { Preferences } from '@/lib/settings/preferences';
+import type { Source } from '@/lib/stores';
+import type { Approver, BlockedBrowser, GrantOutcome, PairRequestSummary, PairedBy, PairingMode } from '@/lib/pairing';
+import type { QueuedNotice } from '@/lib/notices';
+
+export interface BridgeStatus {
+  connected: boolean;
+  daemonVersion: string;
+  protocolVersion: number;
+  port: number;
+  manifestInSync: boolean;
+  extensionVersion?: string;
+  /** The connected browser this caller's tools reach, when more than one could answer. */
+  browser?: string;
+  connectedBrowsers: number;
+  pairedBrowsers: number;
+  pairingPending: boolean;
+  /** How browsers pair through the native host. Absent from a Bridge that cannot grant, which a newer host reads as "too old". */
+  pairing?: { mode: PairingMode; approver: Approver };
+}
+
+export interface SessionSummary {
+  id: string;
+  browser?: string;
+  origin: string;
+  /** Absent from a daemon before 0.8, which knew only the unpacked copy. */
+  source?: Source;
+  extensionVersion: string;
+  pairedAt: string;
+  lastSeenAt: string;
+  connected: boolean;
+  /** What someone named it. */
+  label?: string;
+  /** Absent from a Bridge before automatic pairing, when every browser paired by code. */
+  pairedBy?: PairedBy;
+}
+
+/**
+ * An invoke can be held far longer than the caller's own timeout: an approval waits on the user.
+ * A caller that sends `keepAlive` hears `working` this often until the result, and restarts its
+ * timeout on each; one that doesn't — an older client — is never sent a frame it cannot read.
+ */
+export const INVOKE_KEEPALIVE_MS = 2_000;
+
+export type ControlRequest =
+  | { id: string; op: 'describe'; runId?: string }
+  | { id: string; op: 'status' }
+  | { id: string; op: 'invoke'; action: string; input?: unknown; runId?: string; keepAlive?: boolean }
+  /** The caller stopped waiting for the invoke it sent as `id`: an approval it was waiting on is withdrawn. Never answered. */
+  | { id: string; op: 'cancel' }
+  | { id: string; op: 'pair' }
+  | { id: string; op: 'sessions' }
+  | { id: string; op: 'revoke'; session?: string; origin?: string }
+  | { id: string; op: 'agent'; set?: AgentKind; grant?: AgentKind; models?: AgentKind }
+  /** `watch` also subscribes this caller to `settings-changed`, which no other caller is sent. */
+  | { id: string; op: 'preferences'; watch?: boolean }
+  | { id: string; op: 'setPreference'; change: unknown }
+  /**
+   * `launch` opens Chrome on that phone, at `url` when one is given. `watch` subscribes this caller to
+   * `android-changed` and `watch: false` lets go, so the Bridge stops looking once nobody shows phones.
+   * `peek` answers only what is already known, NOT_CHECKED while nobody watches.
+   */
+  | { id: string; op: 'android'; launch?: string; url?: string; watch?: boolean; peek?: boolean }
+  /** Only the native host asks: `caller` is what the browser vouched for. `waitMs` holds the answer while ask mode waits on a person. */
+  | { id: string; op: 'grant'; installId: string; caller: string; browser?: string; extensionVersion: string; gesture?: boolean; waitMs?: number }
+  /** `watch` makes this caller an approver, sent `pair-requests-changed` whenever the list does. */
+  | { id: string; op: 'pairRequests'; watch?: boolean; as?: Approver }
+  /** `request` is a request id or an install id; an install id also lifts a block when allowed. */
+  | { id: string; op: 'decide'; request: string; allow: boolean; label?: string }
+  | { id: string; op: 'pairing'; set?: PairingMode }
+  | { id: string; op: 'blocked' }
+  | { id: string; op: 'label'; session: string; label: string }
+  /** The desktop app: `watch` makes it the one that shows notices, `allowed` whether the computer lets it. Sent again when that changes. */
+  | { id: string; op: 'notices'; watch?: boolean; allowed?: boolean }
+  /** Hands over every notice waiting to be shown, and forgets them. */
+  | { id: string; op: 'takeNotices' }
+  /** Someone clicked a notice: the browser it came from brings its tab to the front. */
+  | { id: string; op: 'openNotice'; notice: string };
+
+export type ControlMessage =
+  | {
+      id: string;
+      op: 'describe';
+      tools: ToolDescriptor[];
+      reserved?: string[];
+      withheld?: ToolDescriptor[];
+      onDemand?: string[];
+      delivery?: ToolDelivery;
+    }
+  | { id: string; op: 'status'; status: BridgeStatus }
+  | { id: string; op: 'invoke'; result: ActionResult }
+  | { id: string; op: 'working' }
+  | { id: string; op: 'pair'; code: string; expiresAt: number }
+  | { id: string; op: 'sessions'; sessions: SessionSummary[] }
+  | { id: string; op: 'revoke'; revoked: number }
+  | { id: string; op: 'agent'; state: AgentState }
+  | { id: string; op: 'preferences'; result: ActionResult<Preferences> }
+  | { id: string; op: 'android'; result: ActionResult<AndroidState> }
+  | { id: string; op: 'grant'; outcome: GrantOutcome }
+  | { id: string; op: 'pairRequests'; requests: PairRequestSummary[] }
+  | { id: string; op: 'decide'; ok: boolean; error?: string }
+  | { id: string; op: 'pairing'; mode: PairingMode; approver: Approver; error?: string }
+  | { id: string; op: 'blocked'; blocked: BlockedBrowser[] }
+  | { id: string; op: 'label'; ok: boolean; error?: string }
+  | { id: string; op: 'notices'; ok: boolean; error?: string }
+  | { id: string; op: 'takeNotices'; notices: QueuedNotice[] }
+  | { id: string; op: 'openNotice'; ok: boolean }
+  | { event: 'manifest-changed' }
+  /** A browser asked to pair, or a request was decided or expired: read `pairRequests` again. */
+  | { event: 'pair-requests-changed' }
+  /** A notice is waiting: call `takeNotices`. */
+  | { event: 'notices-changed' }
+  /** config.json changed, from any side: read the preferences and the agent state again. */
+  | { event: 'settings-changed' }
+  | { event: 'android-changed'; state: AndroidState };
+
+/**
+ * How a run's grouped tools reach its model. `listed`: in its tool list, for a CLI that keeps schemas
+ * out of the model's context until it looks one up. `on-demand`: left off the list and called through
+ * browsentic_use, for a CLI that sends every schema it is given on every turn. `namespaced`: one
+ * deferred namespace a group, loaded by the CLI's own tool search (Codex's app-server).
+ */
+export type ToolDelivery = 'listed' | 'on-demand' | 'namespaced';
+
+export interface Described {
+  tools: ToolDescriptor[];
+  /** Reserved actions this caller may be offered. Absent when the daemon predates the field. */
+  reserved?: string[];
+  /**
+   * Tools a run is not offered right now but may be later in its conversation — the page-code tools,
+   * until the user turns Live tool on. A CLI whose tool list is fixed when its session begins lists
+   * them out of sight up front; a call to one while it is withheld is refused.
+   */
+  withheld?: ToolDescriptor[];
+  /**
+   * Actions in `tools` this run does not list, reached as `delivery` says and found through the
+   * guides. A caller that does not know the field lists them as it always has.
+   */
+  onDemand?: string[];
+  delivery?: ToolDelivery;
+}
+
+export interface Bridge {
+  describe(): Promise<Described>;
+  /** `signal` aborts when whoever asked stops waiting, which the daemon is then told. */
+  invoke(action: string, input?: unknown, signal?: AbortSignal): Promise<ActionResult>;
+  status(): Promise<BridgeStatus>;
+  onManifestChanged(listener: () => void): void;
+  close(): Promise<void>;
+}

@@ -1,0 +1,256 @@
+import { useEffect, useRef } from 'react';
+import { BookOpen, Globe, Sparkles, SquareSlash, Zap } from 'lucide-react';
+
+import type { SkillCatalog } from '@/lib/actions/protocol';
+import { agentLabel } from '@/lib/agents/catalog';
+import {
+  ANDROID_ALIASES,
+  ANDROID_COMMAND,
+  ANDROID_DESCRIPTION,
+  ANDROID_LEAVE_DESCRIPTION,
+  CONTEXT_COMMAND,
+  CONTEXT_COMMAND_DESCRIPTION,
+  HANDS_FREE_ALIASES,
+  HANDS_FREE_COMMAND,
+  HANDS_FREE_DESCRIPTION,
+  REMOVE_TOOLS_COMMAND,
+  REMOVE_TOOLS_DESCRIPTION,
+} from '@/lib/bridge/commands';
+import type { SavedToolMeta } from '@/lib/bridge/saved-tools';
+import { hostMatchesDomains, hostnameOf } from '@/lib/skills/format';
+import { toolMatchesUrl } from '@/lib/skills/saved-tool';
+import { cn } from '@/lib/utils';
+
+export interface SkillMenuItem {
+  key: string;
+  group: 'tool' | 'command' | 'site' | 'general' | 'agent' | 'other-site';
+  name: string;
+  description: string;
+  /** Set on agent skills — choosing one attaches this id to the message instead of a text prefix. */
+  agentSkillId?: string;
+  /** Set on typed commands — choosing one sends this text right away instead of inserting a prefix. */
+  command?: string;
+  /**
+   * Set on a tool the user saved. Choosing one runs its approved code in the tab there and
+   * then: no agent, no daemon, no prompt, because all three already had their say when it
+   * was saved.
+   */
+  savedToolId?: string;
+  /** Other spellings the filter matches, so a near miss still finds the command. */
+  aliases?: string[];
+  /** Why the command cannot run right now. It stays listed, greyed out, with this in place of its description. */
+  unavailable?: string;
+}
+
+export interface AndroidOption {
+  on: boolean;
+  problem: string;
+}
+
+// Saved tools sort first: they are the only entries that do something on their own, and
+// the user named them, so they are the ones being looked for.
+const GROUP_ORDER: Record<SkillMenuItem['group'], number> = {
+  tool: 0,
+  command: 1,
+  site: 2,
+  general: 3,
+  agent: 4,
+  'other-site': 5,
+};
+
+export function skillMenuItems(
+  catalog: SkillCatalog | undefined,
+  tabUrl: string,
+  query: string,
+  tools: readonly SavedToolMeta[] = [],
+  { handsFree = false, android }: { handsFree?: boolean; android?: AndroidOption } = {},
+): SkillMenuItem[] {
+  const host = hostnameOf(tabUrl);
+  const items: SkillMenuItem[] = [
+    {
+      key: 'command:context',
+      group: 'command',
+      name: 'context',
+      description: CONTEXT_COMMAND_DESCRIPTION,
+      command: CONTEXT_COMMAND,
+    },
+  ];
+  if (handsFree) {
+    items.push({
+      key: 'command:hands-free',
+      group: 'command',
+      name: 'hands-free',
+      description: HANDS_FREE_DESCRIPTION,
+      command: HANDS_FREE_COMMAND,
+      aliases: HANDS_FREE_ALIASES,
+    });
+  }
+  if (android) {
+    items.push({
+      key: 'command:android',
+      group: 'command',
+      name: 'android',
+      description: android.on ? ANDROID_LEAVE_DESCRIPTION : ANDROID_DESCRIPTION,
+      command: ANDROID_COMMAND,
+      aliases: ANDROID_ALIASES,
+      unavailable: android.problem || undefined,
+    });
+  }
+  if (tools.length) {
+    items.push({
+      key: 'command:remove-tools',
+      group: 'command',
+      name: 'remove-tools',
+      description: REMOVE_TOOLS_DESCRIPTION,
+      command: REMOVE_TOOLS_COMMAND,
+    });
+  }
+  // Only the ones that belong on this page. A tool saved for youtube.com/watch is noise
+  // on the homepage, and offering it there would only produce a scope refusal.
+  for (const tool of tools) {
+    if (!toolMatchesUrl(tool.scope, tabUrl)) continue;
+    items.push({
+      key: `tool:${tool.id}`,
+      group: 'tool',
+      name: tool.name,
+      description: tool.description,
+      savedToolId: tool.id,
+    });
+  }
+  for (const skill of catalog?.skills ?? []) {
+    const group =
+      skill.category !== 'site-exploration'
+        ? 'general'
+        : host && hostMatchesDomains(host, skill.domains)
+          ? 'site'
+          : 'other-site';
+    items.push({ key: `${group}:${skill.name}`, group, name: skill.name, description: skill.description });
+  }
+  for (const skill of catalog?.agentSkills ?? []) {
+    items.push({ key: `agent:${skill.id}`, group: 'agent', name: skill.name, description: skill.description, agentSkillId: skill.id });
+  }
+  const needle = query.trim().toLowerCase();
+  const matched = needle
+    ? items.filter(
+        (item) =>
+          item.name.toLowerCase().includes(needle) ||
+          item.description.toLowerCase().includes(needle) ||
+          item.aliases?.some((alias) => alias.includes(needle)),
+      )
+    : items;
+  return matched.sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group] || a.name.localeCompare(b.name));
+}
+
+/** Moves only the menu: `scrollIntoView` would scroll the side panel around it too. */
+function keepInView(list: HTMLElement, row: HTMLElement): void {
+  if (row.offsetTop < list.scrollTop) list.scrollTop = row.offsetTop;
+  else if (row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight) {
+    list.scrollTop = row.offsetTop + row.offsetHeight - list.clientHeight;
+  }
+}
+
+export const skillOptionId = (menuId: string, index: number) => `${menuId}-option-${index}`;
+
+export function SkillMenu({
+  id,
+  items,
+  agent,
+  highlight,
+  onHover,
+  onSelect,
+}: {
+  id: string;
+  items: SkillMenuItem[];
+  agent: SkillCatalog['agent'] | undefined;
+  highlight: number;
+  onHover: (index: number) => void;
+  onSelect: (item: SkillMenuItem) => void;
+}) {
+  const labels: Record<SkillMenuItem['group'], string> = {
+    tool: 'Your tools',
+    command: 'Commands',
+    site: 'On this site',
+    general: 'Browsentic skills',
+    agent: `${agent ? agentLabel(agent) : 'Agent'} skills`,
+    'other-site': 'Other sites',
+  };
+
+  const list = useRef<HTMLDivElement>(null);
+  // A row the pointer reached is already in view, and scrolling to it would slide the next row under the pointer.
+  const pointed = useRef(false);
+
+  useEffect(() => {
+    if (pointed.current) {
+      pointed.current = false;
+      return;
+    }
+    const row = list.current?.children[highlight];
+    if (list.current && row instanceof HTMLElement) keepInView(list.current, row);
+  }, [highlight, items]);
+
+  return (
+    <div
+      ref={list}
+      id={id}
+      role="listbox"
+      aria-label="Skills and commands"
+      className="enters absolute inset-x-0 bottom-full z-20 mb-2 max-h-64 overflow-y-auto rounded-xl border border-line bg-surface shadow-lg"
+    >
+      {items.length === 0 ? (
+        <p className="px-3 py-2.5 text-[11px] text-ink-faint">Nothing matches — keep typing, or press Escape.</p>
+      ) : (
+        items.map((item, index) => (
+          <div key={item.key}>
+            {(index === 0 || items[index - 1].group !== item.group) && (
+              <p className="px-3 pt-2 pb-1 font-mono text-[10px] tracking-[0.14em] text-ink-faint uppercase">
+                {labels[item.group]}
+              </p>
+            )}
+            <button
+              type="button"
+              id={skillOptionId(id, index)}
+              role="option"
+              aria-selected={index === highlight}
+              aria-disabled={item.unavailable ? true : undefined}
+              title={item.unavailable}
+              onMouseEnter={() => {
+                if (index === highlight) return;
+                pointed.current = true;
+                onHover(index);
+              }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                onSelect(item);
+              }}
+              className={cn(
+                'flex w-full items-start gap-2 px-3 py-1.5 text-left transition-colors',
+                index === highlight ? 'bg-brand/12' : 'hover:bg-ground/40',
+                item.unavailable && 'cursor-not-allowed opacity-55',
+              )}
+            >
+              {item.group === 'tool' ? (
+                <Zap className="mt-0.5 size-3 shrink-0 text-lime" />
+              ) : item.group === 'command' ? (
+                <SquareSlash className="mt-0.5 size-3 shrink-0 text-amber" />
+              ) : item.group === 'agent' ? (
+                <Sparkles className="mt-0.5 size-3 shrink-0 text-brand" />
+              ) : item.group === 'general' ? (
+                <BookOpen className="mt-0.5 size-3 shrink-0 text-ink-faint" />
+              ) : (
+                <Globe className="mt-0.5 size-3 shrink-0 text-ink-faint" />
+              )}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-medium text-ink">{item.name}</span>
+                {item.unavailable ? (
+                  <span className="line-clamp-2 block text-[11px] text-ink-dim">{item.unavailable}</span>
+                ) : (
+                  item.description && <span className="block truncate text-[11px] text-ink-dim">{item.description}</span>
+                )}
+              </span>
+            </button>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}

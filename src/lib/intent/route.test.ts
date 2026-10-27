@@ -1,0 +1,130 @@
+import { describe, expect, test } from 'vitest';
+import { routeIntent, type Routing } from './route';
+
+type Case = [say: string, expected: string, input?: unknown];
+
+const CASES: Case[] = [
+  ['back', 'act:history.back', { action: 'back' }],
+  ['go back', 'act:history.back'],
+  ['Hey Browsentic, could you go back please?', 'act:history.back'],
+  ['back a page', 'act:history.back'],
+  ['go forward', 'act:history.forward', { action: 'forward' }],
+  ['reload', 'act:history.reload', { action: 'reload' }],
+  ['refresh the page', 'act:history.reload'],
+  ['reload this page.', 'act:history.reload'],
+
+  ['go to github.com', 'act:navigate.url', { url: 'https://github.com' }],
+  ['open github dot com', 'act:navigate.url', { url: 'https://github.com' }],
+  ['visit https://example.com/docs', 'act:navigate.url', { url: 'https://example.com/docs' }],
+  ['go to youtube', 'act:navigate.url', { url: 'https://youtube.com' }],
+  ['open gmail', 'act:navigate.url', { url: 'https://mail.google.com' }],
+  ['take me to hacker news', 'act:navigate.url', { url: 'https://news.ycombinator.com' }],
+  ['open localhost:3000', 'act:navigate.url', { url: 'http://localhost:3000' }],
+  ['navigate to example.co.uk', 'act:navigate.url'],
+  ['google best noise cancelling headphones', 'act:navigate.search'],
+  ['search the web for tide times', 'act:navigate.search'],
+
+  ['open github.com in a new tab', 'act:tab.open', { url: 'https://github.com' }],
+  ['open gmail in a new tab', 'act:tab.open', { url: 'https://mail.google.com' }],
+  ['take me to hacker news in another tab', 'act:tab.open', { url: 'https://news.ycombinator.com' }],
+  ['visit https://example.com/docs in a separate tab', 'act:tab.open', { url: 'https://example.com/docs' }],
+  ['open localhost:3000 in a new tab', 'act:tab.open', { url: 'http://localhost:3000' }],
+
+  ['open a new tab', 'escalate:no-match'],
+  ['open the settings menu in a new tab', 'escalate:no-match'],
+  ['close this tab', 'escalate:no-match'],
+  ['switch to my gmail tab', 'escalate:no-match'],
+  ['click the new tab button', 'act:click.text', { target: { text: 'new tab', role: 'button' } }],
+
+  ['scroll down', 'act:scroll.direction', { direction: 'down' }],
+  ['scroll down a bit', 'act:scroll.direction'],
+  ['can you scroll down?', 'act:scroll.direction'],
+  ['scroll to the top', 'act:scroll.direction', { direction: 'top' }],
+  ['go to the bottom of the page', 'act:scroll.direction', { direction: 'bottom' }],
+  ['jump to the top', 'act:scroll.direction'],
+  ['page down', 'act:scroll.page', { direction: 'down' }],
+  ['scroll to the reviews', 'act:scroll.element', { target: { text: 'reviews' } }],
+
+  ['press enter', 'escalate:no-match'],
+  ['hit return', 'escalate:no-match'],
+  ['click enter', 'escalate:no-match'],
+  ['click enter button', 'act:click.text', { target: { text: 'enter', role: 'button' } }],
+  ['hit escape', 'act:key.press', { key: 'Escape' }],
+  ['press the tab key', 'act:key.press', { key: 'Tab' }],
+  ['press arrow down', 'act:key.press', { key: 'ArrowDown' }],
+
+  ['click sign in', 'act:click.text', { target: { text: 'sign in' } }],
+  ['Click the Sign In button', 'act:click.text', { target: { text: 'sign in', role: 'button' } }],
+  ['tap continue', 'act:click.text'],
+  ['click on next', 'act:click.text'],
+  ['click terms and conditions', 'act:click.text', { target: { text: 'terms and conditions' } }],
+
+  ['record my browsing session', 'act:recording.start', { captureValues: false }],
+  ['record this session', 'act:recording.start'],
+  ['start recording', 'act:recording.start'],
+  ['stop recording', 'act:recording.stop'],
+  ['end the recording', 'act:recording.stop'],
+
+  ['record a video of this page', 'escalate:no-match'],
+  ['stop recording and then email it to me', 'escalate:multi-step'],
+  ['how do i record a session', 'escalate:question'],
+  ['click record', 'act:click.text', { target: { text: 'record' } }],
+
+  ['stop monitoring', 'act:monitor.stop', {}],
+  ['stop watching', 'act:monitor.stop'],
+  ['stop watching the upload', 'act:monitor.stop'],
+  ['cancel the monitor', 'act:monitor.stop'],
+  ['stop the recording', 'act:recording.stop'],
+  ['tell me when the upload finishes', 'escalate:question'],
+  ['watch this build', 'escalate:no-match'],
+  ['monitor the pipeline until it completes', 'escalate:no-match'],
+
+  ['what is on this page', 'escalate:question'],
+  ['summarize this article', 'escalate:question'],
+  ['is there a login button?', 'escalate:question'],
+  ['back?', 'escalate:question'],
+  ['read me the reviews', 'escalate:question'],
+  ['find the cheapest flight', 'escalate:question'],
+
+  ['click sign in and then fill in my email', 'escalate:multi-step'],
+  ['scroll down and tell me what it says', 'escalate:no-match'],
+  ['press the red button and then wait', 'escalate:multi-step'],
+
+  ['click sign in if you see it', 'escalate:conditional'],
+  ['reload the page unless it already loaded', 'escalate:conditional'],
+
+  ['click buy now', 'escalate:consequential'],
+  ['click the submit button', 'escalate:consequential'],
+  ['click send', 'escalate:consequential'],
+  ['click delete', 'escalate:consequential'],
+
+  ['click it', 'escalate:below-threshold'],
+  ['click the blue one at the bottom of the sidebar', 'escalate:below-threshold'],
+  ['open the settings menu', 'escalate:no-match'],
+  ['take me to the checkout page', 'escalate:no-match'],
+  ['google maps', 'escalate:no-match'],
+  ['search for wireless headphones', 'escalate:no-match'],
+  ['search this site for wireless headphones', 'act:site.search', { query: 'wireless headphones' }],
+  ['search the site for airpods', 'act:site.search', { query: 'airpods' }],
+  ['search here for airpods', 'act:site.search'],
+  ['search this website for airpods', 'act:site.search'],
+  ['log into my account', 'escalate:no-match'],
+  ['buy it now', 'escalate:no-match'],
+  ['', 'escalate:no-match'],
+  ['hey browsentic', 'escalate:no-match'],
+
+  ['@shopping go to amazon.com', 'escalate:skill-prefix'],
+];
+
+const outcome = (routing: Routing) =>
+  routing.decision === 'act' ? `act:${routing.intent.ruleId}` : `escalate:${routing.reason}`;
+
+describe('routeIntent', () => {
+  for (const [say, expected, input] of CASES) {
+    test(`${JSON.stringify(say)} → ${expected}`, () => {
+      const routing = routeIntent(say);
+      expect(outcome(routing)).toBe(expected);
+      if (input !== undefined) expect(routing.decision === 'act' ? routing.intent.input : undefined).toEqual(input);
+    });
+  }
+});

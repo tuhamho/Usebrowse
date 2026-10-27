@@ -1,0 +1,255 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { WebSocketServer, type WebSocket } from 'ws';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
+import type { ControlMessage, ControlRequest } from './control';
+import { RemoteBridge } from './remote-bridge';
+
+const TOKEN = 'the-token-in-the-lockfile';
+
+/** The daemon's /control endpoint, answering each request however the test says. */
+const http = createServer();
+const wss = new WebSocketServer({ noServer: true });
+const received: ControlRequest[] = [];
+let answer: (request: ControlRequest) => ControlMessage | null;
+let daemonSide: WebSocket;
+let port: number;
+
+http.on('upgrade', (request, socket, head) => {
+  if (request.url !== '/control' || request.headers.authorization !== `Bearer ${TOKEN}`) {
+    socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    return;
+  }
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    daemonSide = ws;
+    ws.on('message', (raw) => {
+      const parsed = JSON.parse(String(raw)) as ControlRequest;
+      received.push(parsed);
+      const reply = answer(parsed);
+      if (reply) ws.send(JSON.stringify(reply));
+    });
+  });
+});
+
+beforeAll(async () => {
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+  port = (http.address() as AddressInfo).port;
+});
+
+afterAll(async () => {
+  for (const client of wss.clients) client.terminate();
+  await new Promise((resolve) => http.close(resolve));
+});
+
+let bridge: RemoteBridge;
+
+beforeEach(async () => {
+  received.length = 0;
+  answer = () => null;
+  bridge = await RemoteBridge.connect(port, TOKEN, 'run-9');
+});
+
+afterEach(async () => {
+  vi.useRealTimers();
+  await bridge.close();
+});
+
+describe('connecting to the daemon', () => {
+  test('a client without the lockfile token is turned away', async () => {
+    await expect(RemoteBridge.connect(port, 'guessed')).rejects.toThrow('401');
+  });
+});
+
+describe('asking the daemon', () => {
+  test('the tools it describes', async () => {
+    const tools = [
+      { name: 'page.getPageInfo', description: 'Read the page', inputSchema: {} },
+      { name: 'page.dragElement', description: 'Drag', inputSchema: {} },
+    ];
+    const offer = { reserved: ['browsentic.focusShot'], onDemand: ['page.dragElement'], delivery: 'namespaced' as const };
+    answer = ({ id }) => ({ id, op: 'describe', tools, ...offer });
+    expect(await bridge.describe()).toStrictEqual({ tools, ...offer, withheld: undefined });
+  });
+
+  test('an action, stamped with the run it belongs to', async () => {
+    answer = ({ id }) => ({ id, op: 'invoke', result: { ok: true, data: { clicked: true } } });
+    const result = await bridge.invoke('page.clickElement', { target: { text: 'Buy' } });
+    expect([result, received[0]]).toEqual([
+      { ok: true, data: { clicked: true } },
+      { id: expect.any(String), op: 'invoke', action: 'page.clickElement', input: { target: { text: 'Buy' } }, runId: 'run-9', keepAlive: true },
+    ]);
+  });
+
+  test('its status, a pairing code, the paired browsers, its agent, and a revocation', async () => {
+    const status = { connected: true, daemonVersion: '0.6.2', protocolVersion: 9, port, manifestInSync: true, connectedBrowsers: 1, pairedBrowsers: 1, pairingPending: false };
+    const agentState = { active: 'claude' as const, runners: [] };
+    answer = (request) => {
+      const { id } = request;
+      if (request.op === 'status') return { id, op: 'status', status };
+      if (request.op === 'pair') return { id, op: 'pair', code: 'ABCD2345', expiresAt: 1 };
+      if (request.op === 'sessions') return { id, op: 'sessions', sessions: [] };
+      if (request.op === 'agent') return { id, op: 'agent', state: agentState };
+      if (request.op === 'revoke') return { id, op: 'revoke', revoked: 2 };
+      return null;
+    };
+    expect([await bridge.status(), await bridge.pair(), await bridge.sessions(), await bridge.agent({ set: 'codex' }), await bridge.revoke('chrome-extension://x')]).toEqual([
+      status,
+      { id: expect.any(String), op: 'pair', code: 'ABCD2345', expiresAt: 1 },
+      [],
+      agentState,
+      2,
+    ]);
+    expect(received.slice(3).map(({ id: _id, ...request }) => request)).toEqual([
+      { op: 'agent', set: 'codex' },
+      { op: 'revoke', origin: 'chrome-extension://x' },
+    ]);
+  });
+
+  test('Android, from a Bridge that speaks it, and refused at once by one too old to answer', async () => {
+    const status = (protocolVersion: number) => ({ connected: true, daemonVersion: '0.8.1', protocolVersion, port, manifestInSync: true, connectedBrowsers: 1, pairedBrowsers: 1, pairingPending: false });
+    const state = { enabled: true, ready: false, adb: { found: false }, devices: [] };
+    let speaks = 23;
+    answer = (request) => {
+      const { id } = request;
+      if (request.op === 'status') return { id, op: 'status', status: status(speaks) };
+      if (request.op === 'android') return { id, op: 'android', result: { ok: true, data: state } };
+      return null;
+    };
+    expect(await bridge.android({ peek: true })).toEqual({ ok: true, data: state });
+    speaks = 22;
+    expect(await bridge.android({ peek: true })).toMatchObject({ ok: false, error: { code: 'UNSUPPORTED' } });
+    expect(received.map(({ op }) => op)).toEqual(['status', 'android', 'status']);
+  });
+
+  test('an action its caller stops waiting for is cancelled with the daemon, under the same id', async () => {
+    const abandoned = new AbortController();
+    const pending = bridge.invoke('page.submitForm', {}, abandoned.signal);
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    abandoned.abort();
+    const result = await pending;
+    await vi.waitFor(() => expect(received).toHaveLength(2));
+    expect([result, received[1]]).toEqual([
+      { ok: false, error: { code: 'CANCELLED', message: 'The caller stopped waiting for this call.' } },
+      { id: received[0].id, op: 'cancel' },
+    ]);
+  });
+
+  test('a reply for a request nobody is waiting on, or one that is not JSON, is ignored', async () => {
+    answer = ({ id }) => {
+      daemonSide.send('not json');
+      daemonSide.send(JSON.stringify({ id: 'someone-else', op: 'revoke', revoked: 99 }));
+      return { id, op: 'revoke', revoked: 1 };
+    };
+    expect(await bridge.revoke()).toBe(1);
+  });
+
+  test('a manifest change reaches every listener', async () => {
+    const heard = new Promise<string[]>((resolve) => {
+      const calls: string[] = [];
+      bridge.onManifestChanged(() => calls.push('first'));
+      bridge.onManifestChanged(() => resolve([...calls, 'second']));
+    });
+    daemonSide.send(JSON.stringify({ event: 'manifest-changed' }));
+    expect(await heard).toEqual(['first', 'second']);
+  });
+});
+
+describe('when the daemon does not answer', () => {
+  /** How long a call waits for the daemon before it gives up, and what it gives up with. */
+  const giveUp = async <T>(call: () => Promise<T>): Promise<[number, T | string]> => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const started = Date.now();
+    let outcome: { value: T | string } | undefined;
+    call().then(
+      (value) => (outcome = { value }),
+      (error: Error) => (outcome = { value: error.message }),
+    );
+    while (!outcome) await vi.advanceTimersToNextTimerAsync();
+    return [Date.now() - started, outcome.value];
+  };
+
+  test('an action gives up after a minute, as the daemon being unreachable', async () => {
+    expect(await giveUp(() => bridge.invoke('page.clickElement'))).toEqual([
+      60_000,
+      { ok: false, error: { code: 'DAEMON_UNREACHABLE', message: 'The Browsentic daemon did not respond' } },
+    ]);
+  });
+
+  test('an action that declares a timeout waits that long plus ten seconds', async () => {
+    expect((await giveUp(() => bridge.invoke('page.waitForElement', { timeoutMs: 90_000 })))[0]).toBe(100_000);
+  });
+
+  test('starting a monitor waits a minute, whatever the watch itself is set to', async () => {
+    expect((await giveUp(() => bridge.invoke('page.startMonitor', { timeoutMs: 600_000 })))[0]).toBe(60_000);
+  });
+
+  test('awaiting a monitor or a pick waits for their own defaults plus ten seconds', async () => {
+    expect([(await giveUp(() => bridge.invoke('page.awaitMonitor')))[0], (await giveUp(() => bridge.invoke('page.pickElement')))[0]]).toEqual([130_000, 70_000]);
+  });
+
+  test('status and pairing say so, rather than answering with nothing', async () => {
+    expect([await giveUp(() => bridge.status()), await giveUp(() => bridge.pair()), await giveUp(() => bridge.agent())]).toEqual([
+      [60_000, 'The Browsentic daemon did not respond to a status request'],
+      [60_000, 'The Browsentic daemon did not issue a pairing code'],
+      [60_000, 'The Browsentic daemon did not answer about its agent'],
+    ]);
+  });
+
+  test('lists come back empty and counts as zero', async () => {
+    expect([await giveUp(() => bridge.describe()), await giveUp(() => bridge.sessions()), await giveUp(() => bridge.revoke())]).toEqual([
+      [60_000, { tools: [] }],
+      [60_000, []],
+      [60_000, 0],
+    ]);
+  });
+
+  describe('while the daemon says it is still working on an action', () => {
+    const unreachable = { ok: false, error: { code: 'DAEMON_UNREACHABLE', message: 'The Browsentic daemon did not respond' } };
+
+    /** Frames on one socket arrive in order, so once the manifest event is heard, so was the frame before it. */
+    const deliver = async (message: ControlMessage) => {
+      const read = new Promise<void>((resolve) => bridge.onManifestChanged(resolve));
+      daemonSide.send(JSON.stringify(message));
+      daemonSide.send(JSON.stringify({ event: 'manifest-changed' }));
+      await read;
+    };
+
+    const held = async () => {
+      const asked = new Promise<string>((resolve) => (answer = ({ id }) => (resolve(id), null)));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+      const started = Date.now();
+      const call = bridge.invoke('page.submitForm');
+      return { id: await asked, call, took: () => Date.now() - started };
+    };
+
+    test('the action outlives the minute, for as long as it keeps hearing so', async () => {
+      const { id, call, took } = await held();
+      for (let minute = 0; minute < 3; minute++) {
+        await vi.advanceTimersByTimeAsync(50_000);
+        await deliver({ id, op: 'working' });
+      }
+      await deliver({ id, op: 'invoke', result: { ok: true, data: { submitted: true } } });
+      expect([await call, took()]).toEqual([{ ok: true, data: { submitted: true } }, 150_000]);
+    });
+
+    test('once the daemon falls silent, the action gives up a minute after the last word', async () => {
+      const { id, call, took } = await held();
+      await vi.advanceTimersByTimeAsync(50_000);
+      await deliver({ id, op: 'working' });
+      let outcome: unknown;
+      void call.then((result) => (outcome = result));
+      while (!outcome) await vi.advanceTimersToNextTimerAsync();
+      expect([outcome, took()]).toEqual([unreachable, 110_000]);
+    });
+  });
+
+  test('once closed, calls fail at once without being sent', async () => {
+    await bridge.close();
+    await vi.waitFor(() => expect(daemonSide.readyState).toBe(daemonSide.CLOSED));
+    expect([await bridge.invoke('page.getPageInfo'), await bridge.describe(), received]).toEqual([
+      { ok: false, error: { code: 'DAEMON_UNREACHABLE', message: 'The Browsentic daemon did not respond' } },
+      { tools: [] },
+      [],
+    ]);
+  });
+});

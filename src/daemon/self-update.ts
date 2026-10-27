@@ -1,0 +1,93 @@
+import { spawnSync } from 'node:child_process';
+import { rmSync } from 'node:fs';
+import { isNewer } from '@/lib/version';
+import { installKind, npxEntries, pinnedVersion } from './npx';
+
+const REGISTRY = process.env.BROWSENTIC_REGISTRY ?? 'https://registry.npmjs.org';
+
+/** The published version, or null when the registry is unreachable — offline is not an error here. */
+export async function publishedVersion(timeoutMs = 4_000): Promise<string | null> {
+  try {
+    const response = await fetch(`${REGISTRY}/browsentic/latest`, {
+      headers: { accept: 'application/vnd.npm.install-v1+json' },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return null;
+    const manifest = (await response.json()) as { version?: unknown };
+    return typeof manifest.version === 'string' ? manifest.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Replace this CLI with the published one, then re-run the original command under it.
+ *
+ * Returns the exit code of that second run, or null when nothing needed doing — the caller
+ * exits on a number and carries on otherwise.
+ *
+ * The reason this exists: a stale CLI installs a stale extension, silently and for as long as
+ * the cache lives. `update` and `setup` both promise the current build, so both have to be
+ * able to reach past whatever is pinning them.
+ */
+export async function upgradeCli(current: string, forward: string[]): Promise<number | null> {
+  const pinned = pinnedVersion();
+  if (pinned) return null;
+
+  const latest = await publishedVersion();
+  if (!latest || !isNewer(latest, current)) return null;
+
+  const kind = installKind();
+  // stderr throughout: `setup --json` promises a parseable stdout, and progress is not part of it.
+  if (kind === 'repo') {
+    console.error(`\n  ! browsentic ${latest} is published; this is ${current}, from a source checkout.`);
+    console.error(`    Update it with "git pull && yarn setup".\n`);
+    return null;
+  }
+
+  if (kind === 'app') {
+    console.error(`\n  ! browsentic ${latest} is published; this is ${current}, installed by the Browsentic app.`);
+    console.error(`    Update it from the app, which replaces the command and the extension together.\n`);
+    return null;
+  }
+
+  console.error(`\n  ↻ Updating the command itself, ${current} → ${latest}\n`);
+  const rerun = [...forward, '--no-self-update'];
+
+  if (kind === 'npx') {
+    // Every entry, not just ours: they are all stale by definition now, and the next bare
+    // `npx browsentic` would otherwise pick one of them back up.
+    for (const entry of npxEntries()) rmSync(entry.dir, { recursive: true, force: true });
+    const code = run('npx', ['-y', `browsentic@${latest}`, ...rerun]);
+    if (code !== 0) {
+      console.error(`\n  That did not run, but nothing is broken: the cache is cleared, so a plain`);
+      console.error(`  \`npx browsentic ${forward[0] ?? 'setup'}\` fetches ${latest} fresh next time.\n`);
+    }
+    return code;
+  }
+
+  const installed = run('npm', ['install', '-g', `browsentic@${latest}`]);
+  if (installed !== 0) {
+    console.error(`\n  Could not replace the global install. Run this yourself, then try again:\n`);
+    console.error(`      npm install -g browsentic@${latest}\n`);
+    return installed;
+  }
+  return run('browsentic', rerun);
+}
+
+/**
+ * One argument as cmd.exe hands it on whole, so `--dir "C:\Users\Jo Doe\ext\"` is not split at its
+ * space: quoted, with the backslashes before the closing quote doubled for the program reading it.
+ */
+const forCmd = (arg: string) => (/^[\w@.:/\\=+-]+$/.test(arg) ? arg : `"${arg.replace(/(\\*)$/, '$1$1')}"`);
+
+/** npm, npx and an npm-installed browsentic are batch files on Windows, which only cmd.exe starts. */
+function run(command: string, args: string[]): number {
+  const windows = process.platform === 'win32';
+  const result = spawnSync(command, windows ? args.map(forCmd) : args, { stdio: 'inherit', shell: windows });
+  if (result.error) {
+    console.error(`\n  Could not run \`${command}\`: ${result.error.message}\n`);
+    return 1;
+  }
+  return result.status ?? 1;
+}

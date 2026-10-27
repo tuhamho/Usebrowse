@@ -1,0 +1,569 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Every theme but Daylight is a dark one, so `dark:` asks that rather than
+   tracking a class — a new dark theme needs no edit here. */
+@custom-variant dark (&:not([data-theme='daylight'] *));
+
+/*
+ * Browsentic — the landing page’s palette, at panel scale.
+ * A theme is one block of raw tokens: four grounds, three inks, two lines, six
+ * named colours, and the four dials (wash, grain, neon, glow) the utilities read.
+ * Nothing below this section names a colour, so a theme is that block and no more.
+ * The semantic tokens the shadcn primitives read are mapped once, afterwards,
+ * from whichever block won. The attribute is scoped rather than global — put it
+ * on a swatch and that subtree previews the theme, which is how the picker
+ * draws itself, and index.html carries Ember so the first paint has a palette.
+ */
+:root {
+  --radius: 0.75rem;
+}
+
+/* Warm near-black under a cyan brand — the look Browsentic ships. */
+[data-theme='ember'] {
+  color-scheme: dark;
+
+  --ground: oklch(0.152 0.016 52);
+  --ground-2: oklch(0.183 0.018 50);
+  --surface: oklch(0.213 0.019 48);
+  --surface-2: oklch(0.253 0.021 46);
+
+  --ink: oklch(0.958 0.012 70);
+  --ink-dim: oklch(0.735 0.018 60);
+  --ink-faint: oklch(0.575 0.02 55);
+
+  --line: oklch(0.98 0.01 60 / 10%);
+  --line-strong: oklch(0.98 0.01 60 / 18%);
+
+  --brand: oklch(0.83 0.13 195);
+  --brand-deep: oklch(0.62 0.12 200);
+  --ember: oklch(0.735 0.168 42);
+  --magenta: oklch(0.7 0.21 335);
+  --lime: oklch(0.84 0.18 150);
+  --amber: oklch(0.84 0.15 85);
+  --danger: oklch(0.645 0.205 25);
+
+  --wash: oklch(0.98 0.01 60);
+  --grain: 0.03;
+  --neon: 55%;
+  --glow: 72%;
+}
+
+/* Cool blue-black under a violet brand. */
+[data-theme='midnight'] {
+  color-scheme: dark;
+
+  --ground: oklch(0.158 0.024 264);
+  --ground-2: oklch(0.192 0.028 264);
+  --surface: oklch(0.228 0.032 264);
+  --surface-2: oklch(0.272 0.036 264);
+
+  --ink: oklch(0.958 0.012 268);
+  --ink-dim: oklch(0.742 0.022 266);
+  --ink-faint: oklch(0.585 0.026 265);
+
+  --line: oklch(0.97 0.02 268 / 11%);
+  --line-strong: oklch(0.97 0.02 268 / 19%);
+
+  --brand: oklch(0.79 0.15 288);
+  --brand-deep: oklch(0.6 0.16 288);
+  --ember: oklch(0.75 0.16 22);
+  --magenta: oklch(0.72 0.2 330);
+  --lime: oklch(0.85 0.17 165);
+  --amber: oklch(0.86 0.14 82);
+  --danger: oklch(0.66 0.21 20);
+
+  --wash: oklch(0.97 0.02 268);
+  --grain: 0.03;
+  --neon: 55%;
+  --glow: 72%;
+}
+
+/* A green CRT: the grain and the glow both run hotter here on purpose. */
+[data-theme='phosphor'] {
+  color-scheme: dark;
+
+  --ground: oklch(0.142 0.022 152);
+  --ground-2: oklch(0.176 0.026 152);
+  --surface: oklch(0.208 0.03 150);
+  --surface-2: oklch(0.25 0.034 150);
+
+  --ink: oklch(0.945 0.06 150);
+  --ink-dim: oklch(0.755 0.075 150);
+  --ink-faint: oklch(0.6 0.062 150);
+
+  --line: oklch(0.9 0.12 150 / 14%);
+  --line-strong: oklch(0.9 0.12 150 / 24%);
+
+  --brand: oklch(0.86 0.2 152);
+  --brand-deep: oklch(0.66 0.17 152);
+  --ember: oklch(0.79 0.16 48);
+  --magenta: oklch(0.74 0.2 338);
+  --lime: oklch(0.9 0.2 122);
+  --amber: oklch(0.87 0.16 92);
+  --danger: oklch(0.66 0.2 28);
+
+  --wash: oklch(0.92 0.1 150);
+  --grain: 0.045;
+  --neon: 68%;
+  --glow: 85%;
+}
+
+/* Ink on paper. The inks and the named colours darken to carry on a light
+   ground, the wash inverts so a card still reads as raised, and the grain
+   and the neon halo — both of which only work on black — go to nothing. */
+[data-theme='daylight'] {
+  color-scheme: light;
+
+  --ground: oklch(0.988 0.004 88);
+  --ground-2: oklch(0.968 0.006 84);
+  --surface: oklch(0.945 0.008 80);
+  --surface-2: oklch(0.9 0.011 78);
+
+  --ink: oklch(0.265 0.018 58);
+  --ink-dim: oklch(0.455 0.02 56);
+  --ink-faint: oklch(0.556 0.02 55);
+
+  --line: oklch(0.3 0.02 58 / 13%);
+  --line-strong: oklch(0.3 0.02 58 / 24%);
+
+  --brand: oklch(0.514 0.12 214);
+  --brand-deep: oklch(0.42 0.11 218);
+  --ember: oklch(0.552 0.17 40);
+  --magenta: oklch(0.53 0.2 335);
+  --lime: oklch(0.52 0.14 148);
+  --amber: oklch(0.562 0.13 68);
+  --danger: oklch(0.54 0.2 26);
+
+  --wash: oklch(0.32 0.02 58);
+  --grain: 0;
+  --neon: 0%;
+  --glow: 26%;
+}
+
+:root {
+  --background: var(--ground);
+  --foreground: var(--ink);
+  --card: var(--ground-2);
+  --card-foreground: var(--ink);
+  --popover: var(--surface);
+  --popover-foreground: var(--ink);
+  --primary: var(--brand);
+  --primary-foreground: var(--ground);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--ink);
+  --muted: var(--ground-2);
+  --muted-foreground: var(--ink-dim);
+  --accent: var(--surface-2);
+  --accent-foreground: var(--ink);
+  --destructive: var(--danger);
+  --border: var(--line);
+  --input: var(--line-strong);
+  --ring: var(--brand);
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-ground: var(--ground);
+  --color-ground-2: var(--ground-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-ink-faint: var(--ink-faint);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-brand: var(--brand);
+  --color-brand-deep: var(--brand-deep);
+  --color-ember: var(--ember);
+  --color-magenta: var(--magenta);
+  --color-lime: var(--lime);
+  --color-amber: var(--amber);
+}
+
+/* Not inline: these are read back as custom properties further down. */
+@theme {
+  --font-display:
+    "Inter Tight", "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:
+    "JetBrains Mono", "Fira Code", ui-monospace, "SF Mono", "Cascadia Code",
+    Menlo, Consolas, monospace;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    background-color: var(--background);
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "ss01";
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display;
+    letter-spacing: -0.024em;
+  }
+
+  /* The film grain the landing page wears, at a fraction of the strength. */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    pointer-events: none;
+    opacity: var(--grain);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  ::selection {
+    background: color-mix(in oklch, var(--brand) 32%, transparent);
+    color: var(--ink);
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--surface-2);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklch, var(--brand) 40%, var(--surface-2));
+  }
+}
+
+/* The website’s card: a top-lit wash over the ground, hairline edge. */
+@utility panel-card {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--wash) 4.5%, transparent),
+    color-mix(in oklch, var(--wash) 1.5%, transparent)
+  );
+  border: 1px solid var(--line);
+}
+
+/* Neon halo around text, taken from the element’s current color. */
+@utility neon-text {
+  text-shadow: 0 0 12px color-mix(in oklch, currentColor var(--neon), transparent);
+}
+
+/* Glow for small indicators (status dots); color follows text color. */
+@utility glow-dot {
+  box-shadow: 0 0 8px 1px color-mix(in oklch, currentColor var(--glow), transparent);
+}
+
+@utility glow-brand {
+  box-shadow: 0 6px 26px -10px color-mix(in oklch, var(--brand) var(--glow), transparent);
+}
+@utility glow-destructive {
+  box-shadow:
+    0 6px 26px -10px color-mix(in oklch, var(--destructive) var(--glow), transparent);
+}
+
+/* Backdrops for empty states and headers. */
+@utility dot-grid {
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in oklch, var(--wash) 9%, transparent) 1px,
+    transparent 0
+  );
+  background-size: 22px 22px;
+}
+@utility line-grid {
+  background-image:
+    linear-gradient(
+        to right,
+        color-mix(in oklch, var(--wash) 5%, transparent) 1px,
+        transparent 1px
+      ),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklch, var(--wash) 5%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 48px 48px;
+}
+
+@utility fade-top {
+  mask-image: linear-gradient(to top, #000 84%, transparent 100%);
+}
+@utility fade-bottom {
+  mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+}
+@utility fade-radial {
+  mask-image: radial-gradient(
+    ellipse 80% 70% at 50% 30%,
+    #000 40%,
+    transparent 100%
+  );
+}
+
+/* The light Browsentic Home's composer sits in, as strong as the theme's glow dial allows. */
+@utility home-halo {
+  background: radial-gradient(
+    ellipse 65% 60% at 50% 42%,
+    color-mix(in oklch, var(--brand) calc(var(--glow) * 0.13), transparent),
+    transparent 72%
+  );
+}
+
+@utility text-gradient {
+  background: linear-gradient(
+    100deg,
+    var(--ink) 4%,
+    var(--amber) 44%,
+    var(--ember) 96%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@keyframes browsentic-countdown {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
+}
+
+/* One token of the agent’s reply arriving. Mount-only: a span that already
+   exists is never re-animated, so a growing message settles word by word. */
+@keyframes browsentic-token {
+  from {
+    opacity: 0;
+    filter: blur(5px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+@keyframes browsentic-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes browsentic-caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  55%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes browsentic-think {
+  0%,
+  70%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes browsentic-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+
+/* The mark tracing itself once on Browsentic Home: the path, then its three stops. */
+@keyframes browsentic-trace {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes browsentic-stop {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The panel folding down into the hands-free mic before it closes. */
+@keyframes browsentic-fold {
+  to {
+    opacity: 0;
+    transform: scale(0.9) translateY(4%);
+    filter: blur(6px);
+  }
+}
+
+/* Appears as the panel starts to collapse, holds alone on the empty ground, then drops away. */
+@keyframes browsentic-detach-orb {
+  0%,
+  22% {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  56% {
+    transform: scale(1);
+  }
+  72% {
+    opacity: 1;
+    transform: scale(1);
+    animation-timing-function: cubic-bezier(0.7, 0, 0.84, 0);
+  }
+  100% {
+    opacity: 0.3;
+    transform: translateY(170%) scale(0.85);
+  }
+}
+
+@layer components {
+  .detaching > :not([data-detach-veil]) {
+    transform-origin: 50% 100%;
+    animation: browsentic-fold 0.34s cubic-bezier(0.7, 0, 0.84, 0) forwards;
+  }
+
+  .detach-orb {
+    animation: browsentic-detach-orb 0.56s var(--ease-out-expo) both;
+  }
+
+  .logo-drawn path:last-of-type {
+    stroke-dasharray: 1;
+    animation: browsentic-trace 0.7s var(--ease-out-expo) 0.1s both;
+  }
+  .logo-drawn circle:nth-last-of-type(-n + 3) {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: browsentic-stop 0.4s var(--ease-out-expo) both;
+  }
+  .logo-drawn circle:nth-last-of-type(3) {
+    animation-delay: 0.1s;
+  }
+  .logo-drawn circle:nth-last-of-type(2) {
+    animation-delay: 0.38s;
+  }
+  .logo-drawn circle:nth-last-of-type(1) {
+    animation-delay: 0.62s;
+  }
+
+  [data-stream] .tok {
+    animation: browsentic-token 0.6s cubic-bezier(0.33, 1, 0.68, 1) both;
+  }
+
+  /* The caret rides the end of whatever block the reply is still growing. */
+  [data-stream="live"] > *:last-child::after {
+    content: "";
+    display: inline-block;
+    width: 0.42em;
+    height: 0.95em;
+    margin-left: 0.14em;
+    vertical-align: -0.12em;
+    border-radius: 1px;
+    background: var(--brand);
+    box-shadow: 0 0 10px color-mix(in oklch, var(--brand) var(--glow), transparent);
+    animation: browsentic-caret 1.05s steps(1, end) infinite;
+  }
+
+  .enters {
+    animation: browsentic-enter 0.34s var(--ease-out-expo) both;
+  }
+
+  .think-dot {
+    animation: browsentic-think 1.2s ease-in-out infinite;
+  }
+  .think-dot:nth-child(2) {
+    animation-delay: 0.16s;
+  }
+  .think-dot:nth-child(3) {
+    animation-delay: 0.32s;
+  }
+
+  /* A light sweeping along the top edge of whatever is in flight. */
+  .sweep::after {
+    content: "";
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    height: 1px;
+    width: 30%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--brand),
+      transparent
+    );
+    animation: browsentic-sweep 1.8s var(--ease-out-expo) infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,271 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { AGENTS, AGENT_KINDS, DEFAULT_AGENT, isAgentKind, isModelId, type AgentKind } from '@/lib/agents/catalog';
+import { FENCE_SETTING, UNATTENDED_SETTING, type GuardrailValue, type RuleEffect } from '@/lib/settings/guardrails';
+import { isThemeId, type ThemeId } from '@/lib/settings/theme';
+import { DEFAULT_PAIRING_MODE, isPairingMode, type PairingMode } from '@/lib/pairing';
+import type { GuardrailConfig } from '../guardrails';
+import { stateDir } from '../lockfile';
+import { log } from '../log';
+
+export interface AgentSettings {
+  /** Binary name or absolute path. Defaults to the agent's own command name. */
+  bin: string;
+  model?: string;
+  effort?: string;
+  /** How a runner that can reach its CLI two ways should; Codex takes `exec` to keep off its app-server. */
+  transport?: string;
+}
+
+export interface AgentConfig {
+  /** Which CLI the daemon spawns for side-panel runs and background tasks. */
+  agent: AgentKind;
+  agents: Record<AgentKind, AgentSettings>;
+  requireApproval: string[];
+  /** How many tab sessions may have a run going at once. */
+  maxConcurrentRuns?: number;
+  /** Overrides for the declared guardrail policy. See guardrails/policy.ts. */
+  guardrails?: GuardrailConfig;
+  /** The look every paired browser takes. Absent until someone picks one. */
+  theme?: ThemeId;
+  screenshotDir?: string;
+  downloadDir?: string;
+  /** Days a captured download is kept before the daemon sweeps it. Fractions allowed. Defaults to 14. */
+  downloadTtlDays?: number;
+  skillsDir?: string;
+  /**
+   * Where `browsentic setup --dir` put the unpacked extension, so `update` writes to the same
+   * place. Only set when it is not the default; needed for sandboxed browsers (Flatpak, Snap)
+   * that cannot read ~/browsentic.
+   */
+  extensionDir?: string;
+  siteMap?: {
+    research?: boolean;
+    allowClicks?: boolean;
+    maxPages?: number;
+    maxScreenshots?: number;
+    timeoutMs?: number;
+  };
+  /** Driving Chrome on an Android phone. Off stops every use of adb; `adb` names the binary to use. */
+  android?: { enabled?: boolean; adb?: string };
+  /** How a browser pairs through the native host: by itself, once someone allows it, or only with a code. */
+  pairing?: unknown;
+}
+
+/** A hand edit naming a mode Browsentic does not know pairs nothing by itself: whoever wrote it meant something stricter than the default, or made a typo worth noticing. */
+export function pairingMode(config: AgentConfig = readAgentConfig()): PairingMode {
+  const { pairing } = config;
+  const mode = pairingObject(pairing) ? pairing.mode : pairing;
+  if (mode === undefined) return DEFAULT_PAIRING_MODE;
+  if (isPairingMode(mode)) return mode;
+  log(`pairing mode ${JSON.stringify(mode)} is not auto, ask or code; pairing by code only`);
+  return 'code';
+}
+
+/** Sets how browsers pair, leaving every other key in config.json untouched. */
+export function writePairingMode(mode: PairingMode): void {
+  const stored = readStored();
+  write({ ...stored, pairing: { ...(pairingObject(stored.pairing) ? stored.pairing : {}), mode } });
+}
+
+const pairingObject = (value: unknown): value is { mode?: unknown } => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+export interface AndroidSettings {
+  enabled: boolean;
+  adb?: string;
+}
+
+export function androidSettings(config: AgentConfig): AndroidSettings {
+  return { enabled: config.android?.enabled !== false, adb: text(config.android?.adb) };
+}
+
+export const CONCURRENT_RUNS = { fallback: 3, max: 8 } as const;
+
+export function maxConcurrentRuns(config: AgentConfig): number {
+  return clamp(config.maxConcurrentRuns, CONCURRENT_RUNS);
+}
+
+export const SITE_MAP_LIMITS = {
+  pages: { fallback: 15, max: 40 },
+  screenshots: { fallback: 10, max: 24 },
+  timeoutMs: { fallback: 10 * 60_000, max: 30 * 60_000 },
+} as const;
+
+export interface SiteMapSettings {
+  research: boolean;
+  allowClicks: boolean;
+  maxPages: number;
+  maxScreenshots: number;
+  timeoutMs: number;
+}
+
+export function siteMapSettings(config: AgentConfig): SiteMapSettings {
+  const stored = config.siteMap ?? {};
+  return {
+    research: stored.research !== false,
+    allowClicks: stored.allowClicks === true,
+    maxPages: clamp(stored.maxPages, SITE_MAP_LIMITS.pages),
+    maxScreenshots: clamp(stored.maxScreenshots, SITE_MAP_LIMITS.screenshots),
+    timeoutMs: clamp(stored.timeoutMs, SITE_MAP_LIMITS.timeoutMs),
+  };
+}
+
+function clamp(value: unknown, { fallback, max }: { fallback: number; max: number }): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 1) return fallback;
+  return Math.min(Math.floor(value), max);
+}
+
+export const configPath = join(stateDir, 'config.json');
+
+const DEFAULT_MODEL: Partial<Record<AgentKind, string>> = {
+  claude: 'sonnet',
+};
+
+const DEFAULT_APPROVALS = ['page.submitForm'];
+
+interface StoredConfig extends Record<string, unknown> {
+  agent?: unknown;
+  agents?: Record<string, { bin?: unknown; model?: unknown; effort?: unknown; transport?: unknown } | undefined>;
+  requireApproval?: unknown;
+  guardrails?: unknown;
+  /** Pre-0.2 layout: one Claude Code runner, configured at the top level. */
+  claudeBin?: unknown;
+  model?: unknown;
+  effort?: unknown;
+}
+
+function readStored(): StoredConfig {
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as StoredConfig) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function readAgentConfig(): AgentConfig {
+  const stored = readStored();
+  const agents = {} as Record<AgentKind, AgentSettings>;
+  for (const kind of AGENT_KINDS) agents[kind] = settingsFor(stored, kind);
+
+  return {
+    ...(stored as Partial<AgentConfig>),
+    agent: isAgentKind(stored.agent) ? stored.agent : DEFAULT_AGENT,
+    agents,
+    requireApproval: Array.isArray(stored.requireApproval)
+      ? (stored.requireApproval as string[])
+      : DEFAULT_APPROVALS,
+    theme: isThemeId(stored.theme) ? stored.theme : undefined,
+  };
+}
+
+function settingsFor(stored: StoredConfig, kind: AgentKind): AgentSettings {
+  const scoped = stored.agents?.[kind] ?? {};
+  const legacy = kind === 'claude' ? { bin: stored.claudeBin, model: stored.model, effort: stored.effort } : {};
+  return {
+    bin: text(scoped.bin) ?? text(legacy.bin) ?? AGENTS[kind].bin,
+    model: modelOf(kind, scoped.model) ?? modelOf(kind, legacy.model) ?? DEFAULT_MODEL[kind],
+    effort: text(scoped.effort) ?? text(legacy.effort),
+    transport: text(scoped.transport),
+  };
+}
+
+const text = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim() : undefined;
+
+/** A hand-edited model a CLI could read as a flag is left out, so the run falls back rather than failing. */
+function modelOf(kind: AgentKind, value: unknown): string | undefined {
+  const model = text(value);
+  if (model === undefined || isModelId(model)) return model;
+  log(`ignoring ${kind} model ${JSON.stringify(model)} — a model id starts with a letter or digit and has no spaces`);
+  return undefined;
+}
+
+export interface ActiveAgent extends AgentSettings {
+  kind: AgentKind;
+}
+
+export function activeAgent(config: AgentConfig): ActiveAgent {
+  return { kind: config.agent, ...config.agents[config.agent] };
+}
+
+/** Switches the agent the daemon spawns, leaving every other key in config.json untouched. */
+export function writeActiveAgent(kind: AgentKind): void {
+  const stored = readStored();
+  write({ ...stored, agent: kind });
+}
+
+/**
+ * Sets or clears one agent's model, leaving every other key in config.json untouched. Claude's
+ * pre-0.2 top-level `model` spelling is removed alongside, so a cleared pick cannot resurface it.
+ * False, and nothing written, when the model is not one `isModelId` accepts.
+ */
+export function writeAgentModel(kind: AgentKind, model: string | null): boolean {
+  const value = text(model);
+  if (value !== undefined && !isModelId(value)) return false;
+  const stored = readStored();
+  const agents = { ...(stored.agents ?? {}) };
+  const scoped = { ...(agents[kind] ?? {}) };
+  if (value) scoped.model = value;
+  else delete scoped.model;
+  if (Object.keys(scoped).length) agents[kind] = scoped;
+  else delete agents[kind];
+
+  const next = { ...stored };
+  if (Object.keys(agents).length) next.agents = agents;
+  else delete next.agents;
+  if (kind === 'claude') delete next.model;
+  write(next);
+  return true;
+}
+
+/**
+ * Write one guardrail override, leaving every other key in config.json alone. `null`
+ * removes the override rather than writing a value equal to the default — so a config
+ * file only ever names the decisions someone actually made, and a change to a shipped
+ * default reaches an install that never overrode it.
+ */
+export function writeGuardrailSetting(setting: string, value: GuardrailValue): void {
+  const stored = readStored();
+  const guardrails: GuardrailConfig = { ...((stored.guardrails as GuardrailConfig | undefined) ?? {}) };
+
+  if (setting === FENCE_SETTING) {
+    if (value === null) delete guardrails.fence;
+    else guardrails.fence = value === true;
+  } else if (setting === UNATTENDED_SETTING) {
+    if (value === null) delete guardrails.unattended;
+    else guardrails.unattended = value === 'allow' ? 'allow' : 'deny';
+  } else {
+    const rules = { ...(guardrails.rules ?? {}) };
+    if (value === null) delete rules[setting];
+    else rules[setting] = value as RuleEffect;
+    if (Object.keys(rules).length) guardrails.rules = rules;
+    else delete guardrails.rules;
+  }
+
+  const next = { ...stored };
+  if (Object.keys(guardrails).length) next.guardrails = guardrails;
+  else delete next.guardrails;
+  write(next);
+}
+
+/** Sets the look every paired browser takes, leaving every other key in config.json untouched. */
+export function writeTheme(theme: ThemeId): void {
+  write({ ...readStored(), theme });
+}
+
+function write(config: StoredConfig): void {
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+}
+
+/**
+ * Remember where `setup --dir` installed, so a later `update` writes to the same directory
+ * instead of silently laying down a second copy at the default path.
+ */
+export function rememberExtensionDir(dir: string | undefined): void {
+  const stored = readStored();
+  if (dir) stored.extensionDir = dir;
+  else delete stored.extensionDir;
+  write(stored);
+}

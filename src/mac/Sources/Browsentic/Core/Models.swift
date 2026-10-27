@@ -1,0 +1,607 @@
+import Foundation
+import UserNotifications
+
+struct Lockfile: Decodable, Equatable {
+    let pid: Int
+    let port: Int
+    let token: String
+    let daemonVersion: String?
+}
+
+struct BridgeStatus: Decodable, Equatable {
+    let connected: Bool
+    let daemonVersion: String
+    let protocolVersion: Int
+    let port: Int
+    let manifestInSync: Bool
+    let extensionVersion: String?
+    let pairedBrowsers: Int
+    let pairingPending: Bool
+    /// Absent from a Bridge before automatic pairing.
+    let pairing: PairingSetting?
+}
+
+enum PairingMode: String, CaseIterable, Identifiable {
+    case auto, ask, code
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: "Automatic"
+        case .ask: "Ask me"
+        case .code: "Code only"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .auto: "A browser with Browsentic connects by itself."
+        case .ask: "You allow each new browser here first."
+        case .code: "A browser connects only with a code you type into it."
+        }
+    }
+
+    var pairsByItself: Bool { self != .code }
+}
+
+/// The `pairing` answer, and the same pair inside `status`. The mode stays a string so a mode this app does not know yet still decodes.
+struct PairingSetting: Decodable, Equatable {
+    let mode: String
+    let approver: String
+    let error: String?
+
+    var kind: PairingMode? { PairingMode(rawValue: mode) }
+}
+
+enum PairedBy: String {
+    case code, auto, approved
+
+    var label: String {
+        switch self {
+        case .auto: "Paired by itself"
+        case .approved: "Allowed"
+        case .code: "Paired with a code"
+        }
+    }
+}
+
+struct BrowserSession: Decodable, Identifiable, Equatable {
+    /// Absent from a daemon that still knows a browser by its origin alone.
+    let sessionId: String?
+    let browser: String?
+    let origin: String
+    /// Where its extension came from; absent from a daemon before 0.8, which knew only the unpacked copy.
+    let source: String?
+    let extensionVersion: String
+    let pairedAt: String
+    let lastSeenAt: String
+    let connected: Bool
+    let label: String?
+    /// Absent from a Bridge before automatic pairing, when every browser paired with a code.
+    let pairedBy: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "id"
+        case browser, origin, source, extensionVersion, pairedAt, lastSeenAt, connected, label, pairedBy
+    }
+
+    var id: String { sessionId ?? origin }
+    var extensionId: String { origin.replacingOccurrences(of: #"^[a-z-]+-extension://"#, with: "", options: .regularExpression) }
+    var name: String? { label ?? browser }
+    var displayName: String { name ?? "This browser" }
+    var paired: PairedBy { pairedBy.flatMap(PairedBy.init(rawValue:)) ?? .code }
+    /// Changes when the same browser pairs again, so a second pairing counts as new.
+    var pairing: String { "\(id)@\(pairedAt)" }
+}
+
+/// A browser waiting for someone to let it in, from `pairRequests`.
+struct PairRequest: Decodable, Identifiable, Equatable {
+    let id: String
+    let installId: String
+    let browser: String?
+    let source: String
+    let extensionVersion: String
+    let firstAt: Double
+    let lastAskAt: Double
+    /// Minted by the Bridge per request and handed only to approvers, so an answer can prove which request it is for.
+    let nonce: String
+
+    var name: String { browser ?? "A browser" }
+    var shortId: String { String(installId.prefix(8)) }
+    var askedAt: Date { Date(timeIntervalSince1970: firstAt / 1000) }
+}
+
+/// A browser kept out after an Unpair or a Deny, until someone reconnects it.
+struct BlockedBrowser: Decodable, Identifiable, Equatable {
+    let installId: String
+    let browser: String?
+    let origin: String
+    let at: String
+    let reason: String
+
+    var id: String { installId }
+    var name: String { browser ?? "A browser" }
+    var shortId: String { String(installId.prefix(8)) }
+    var why: String { reason == "denied" ? "Denied" : "Unpaired" }
+}
+
+/// A monitor, task or timer that finished while its browser was out of sight, handed over by the Bridge.
+/// `kind` and `tone` stay strings so a value this app does not know yet never drops the notice.
+struct QueuedNotice: Decodable, Identifiable, Equatable {
+    let id: String
+    let kind: String?
+    let title: String
+    let body: String
+    let tone: String?
+    let browser: String?
+}
+
+/// Decodes every element it can and skips the rest, so one malformed entry never costs the others.
+struct LossyList<Element: Decodable>: Decodable {
+    let items: [Element]
+
+    private struct Skipped: Decodable {
+        init(from _: Decoder) {}
+    }
+
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        var items: [Element] = []
+        while !container.isAtEnd {
+            if let item = try? container.decode(Element.self) { items.append(item) } else { _ = try container.decode(Skipped.self) }
+        }
+        self.items = items
+    }
+}
+
+enum NoticeWatch {
+    /// The first Bridge protocol with `notices`, `takeNotices` and `openNotice`; an older Bridge never answers them.
+    static let protocolVersion = 24
+
+    static func supported(by status: BridgeStatus?) -> Bool { (status?.protocolVersion ?? 0) >= protocolVersion }
+
+    /// Allowed, and somewhere to appear: with alerts off and Notification Center off a notice shows nowhere.
+    static func allows(_ status: UNAuthorizationStatus, visible: Bool) -> Bool { (status == .authorized || status == .provisional) && visible }
+
+    /// Nil `reported` is a socket that has not been told yet.
+    static func needsReport(allowed: Bool, reported: Bool?) -> Bool { reported != allowed }
+
+    /// A repeat of the same event replaces the notification instead of stacking another.
+    static func identifier(for notice: String) -> String { "notice:\(notice)" }
+}
+
+/// The apps behind each brand a browser reports, every channel of one browser sharing its brand, so a notice
+/// click can let the browser it came from take the front.
+enum BrowserApps {
+    static let bundleIds: [String: [String]] = [
+        "Google Chrome": ["com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev", "com.google.Chrome.canary"],
+        "Chromium": ["org.chromium.Chromium"],
+        "Microsoft Edge": ["com.microsoft.edgemac", "com.microsoft.edgemac.Beta", "com.microsoft.edgemac.Dev", "com.microsoft.edgemac.Canary"],
+        "Brave": ["com.brave.Browser", "com.brave.Browser.beta", "com.brave.Browser.nightly"],
+        "Opera": ["com.operasoftware.Opera"],
+        "Opera GX": ["com.operasoftware.OperaGX"],
+        "Vivaldi": ["com.vivaldi.Vivaldi"],
+        "Arc": ["company.thebrowser.Browser"],
+        "Firefox": ["org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "org.mozilla.nightly"],
+        "Google Chrome for Testing": ["com.google.chrome.for.testing"],
+        "Zen": ["app.zen-browser.zen"],
+        "LibreWolf": ["io.gitlab.librewolf-community"],
+        "Waterfox": ["net.waterfox.waterfox"],
+        "Floorp": ["one.ablaze.floorp"],
+    ]
+
+    static func candidates(for brand: String?) -> [String] {
+        guard let brand else { return [] }
+        return bundleIds.first { $0.key.caseInsensitiveCompare(brand) == .orderedSame }?.value ?? []
+    }
+
+    /// The running apps of the brand the notice came from; an unknown brand, or none of its apps running, names none.
+    static func named(_ brand: String?, among running: Set<String>) -> [String] {
+        candidates(for: brand).filter(running.contains)
+    }
+
+    /// Those, or every running browser when they are none, since Vivaldi and Arc report no brand of their own:
+    /// only the browser the notice came from asks to come forward.
+    static func yielded(for brand: String?, among running: Set<String>) -> [String] {
+        let named = named(brand, among: running)
+        return named.isEmpty ? bundleIds.values.flatMap { $0 }.filter(running.contains).sorted() : named
+    }
+}
+
+/// What the Bridge answers an op that only succeeds or fails.
+struct Acknowledgement: Decodable {
+    let ok: Bool
+    let error: String?
+}
+
+struct BridgeRefusal: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+/// The pure decisions behind the approval sheet and the notifications, kept apart so they can be tested.
+enum PairingWatch {
+    /// Oldest first, so the sheet shows requests in the order browsers asked.
+    static func queue(_ requests: [PairRequest]) -> [PairRequest] {
+        requests.sorted { ($0.firstAt, $0.id) < ($1.firstAt, $1.id) }
+    }
+
+    static func arrived(_ requests: [PairRequest], announced: Set<String>) -> [PairRequest] {
+        requests.filter { !announced.contains($0.id) }
+    }
+
+    static func gone(_ requests: [PairRequest], previous: [PairRequest]) -> Set<String> {
+        Set(previous.map(\.id)).subtracting(requests.map(\.id))
+    }
+
+    /// Nil `seen` is the first look at a Bridge: everything already there is old news.
+    static func pairedByThemselves(_ sessions: [BrowserSession], seen: Set<String>?) -> [BrowserSession] {
+        guard let seen else { return [] }
+        return sessions.filter { $0.paired == .auto && !seen.contains($0.pairing) }
+    }
+
+    /// An answer from a notification counts only for a request still waiting, with the nonce the Bridge gave it.
+    static func answerable(_ id: String, nonce: String, in requests: [PairRequest]) -> PairRequest? {
+        requests.first { $0.id == id && $0.nonce == nonce && !nonce.isEmpty }
+    }
+}
+
+struct PairingCode: Decodable, Equatable {
+    let code: String
+    let expiresAt: Double
+
+    var expiry: Date { Date(timeIntervalSince1970: expiresAt / 1000) }
+    var grouped: String { code.count > 4 ? "\(code.prefix(4))-\(code.dropFirst(4))" : code }
+}
+
+struct AgentProblem: Decodable, Equatable {
+    let code: String
+    let message: String
+    let fix: String?
+    let grantable: Bool?
+}
+
+struct RunnerStatus: Decodable, Identifiable, Equatable {
+    let kind: String
+    let bin: String
+    let ready: Bool
+    let version: String?
+    let model: String?
+    let problem: AgentProblem?
+
+    var id: String { kind }
+}
+
+struct AgentDescriptor: Decodable, Identifiable, Equatable {
+    let kind: String
+    let label: String
+    let vendor: String
+    let bin: String
+    let install: String
+    let docs: String
+    let models: [String]
+
+    var id: String { kind }
+    var installsWithNpm: Bool { install.hasPrefix("npm ") }
+}
+
+struct AgentState: Decodable, Equatable {
+    let active: String
+    let runners: [RunnerStatus]
+    var catalog: [AgentDescriptor]?
+}
+
+/// What config.json holds for every surface. The extension's settings page reads and writes the same values.
+struct Preferences: Decodable, Equatable {
+    /// Nil until someone picks one; every paired browser shows Ember until then.
+    let theme: String?
+    let guardrails: GuardrailSettings
+}
+
+struct GuardrailSettings: Decodable, Equatable {
+    struct Switch: Decodable, Equatable {
+        let enabled: Bool
+        let overridden: Bool
+    }
+
+    struct Unattended: Decodable, Equatable {
+        let effect: String
+        let overridden: Bool
+    }
+
+    let rules: [GuardrailRule]
+    let fence: Switch
+    let unattended: Unattended
+    let hosts: [String]
+    let configPath: String
+}
+
+struct GuardrailRule: Decodable, Identifiable, Equatable {
+    let id: String
+    let title: String
+    let reason: String
+    /// The effect with nothing overridden.
+    let fallback: String
+    /// Present only when someone chose one.
+    let choice: String?
+    let locked: Bool?
+
+    var isLocked: Bool { locked == true }
+
+    enum CodingKeys: String, CodingKey {
+        case choice = "override"
+        case id, title, reason, fallback, locked
+    }
+}
+
+enum RuleEffect: String, CaseIterable, Identifiable {
+    case allow, confirm, deny
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .allow: "Allow"
+        case .confirm: "Ask"
+        case .deny: "Block"
+        }
+    }
+
+    static func label(_ raw: String) -> String { RuleEffect(rawValue: raw)?.label ?? raw.capitalized }
+}
+
+/// A daemon answer shaped `{ ok, data }` or `{ ok, error }`, as the whole socket protocol is.
+struct Outcome<Value: Decodable>: Decodable {
+    struct Failure: Decodable, LocalizedError {
+        let code: String
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    let ok: Bool
+    let data: Value?
+    let error: Failure?
+
+    func value() throws -> Value {
+        if ok, let data { return data }
+        throw error ?? Failure(code: "MALFORMED", message: ControlError.malformed.localizedDescription)
+    }
+}
+
+struct Skill: Decodable, Identifiable, Equatable {
+    let name: String
+    let description: String
+    let triggers: [String]
+    let isDefault: Bool
+    let category: String
+    let domains: [String]
+    let source: String
+    let provenance: String
+    let path: String?
+
+    var id: String { "\(source)/\(name)" }
+}
+
+struct AgentSkill: Decodable, Identifiable, Equatable {
+    let name: String
+    let description: String?
+    var id: String { name }
+}
+
+struct SkillListing: Decodable, Equatable {
+    let skills: [Skill]
+    let dirs: [String]
+    let agent: String
+    let agentSkills: [AgentSkill]
+}
+
+struct Grant: Decodable, Identifiable, Equatable {
+    let action: String
+    let host: String
+    let at: String
+    var id: String { "\(action)@\(host)" }
+}
+
+struct GrantListing: Decodable { let grants: [Grant] }
+
+struct DownloadRecord: Decodable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let mime: String
+    let size: Int
+    let url: String
+    let host: String?
+    let notes: String
+    let savedTo: String
+    let capturedAt: String
+}
+
+struct DownloadListing: Decodable, Equatable {
+    let dir: String
+    let downloads: [DownloadRecord]
+}
+
+struct SetupResult: Decodable {
+    struct Daemon: Decodable { let port: Int; let pid: Int }
+    struct Chosen: Decodable { let id: String; let opened: Bool; let connected: Bool }
+    let version: String
+    /// Set only when the unpacked folder was written or was already there.
+    let extensionDir: String?
+    let daemon: Daemon
+    let alreadyPaired: Bool
+    let chosen: Chosen?
+    let pairingCode: String?
+    let expiresAt: Double?
+}
+
+/// One browser as `browsentic browsers --json` describes it: where it gets the extension, and the copies it runs.
+struct BrowserRow: Decodable, Identifiable, Equatable {
+    struct Copy: Decodable, Equatable {
+        let id: String
+        let source: String?
+        let extensionVersion: String
+        let connected: Bool
+    }
+
+    let id: String
+    let label: String
+    let installed: Bool
+    let source: String
+    let store: String
+    let storeUrl: String
+    let steps: [String]
+    let extensionsPage: String
+    let connected: Bool
+    let sessions: [Copy]
+
+    var copy: Copy? { sessions.first(where: \.connected) ?? sessions.first }
+    var addTitle: String { id == "firefox" ? "Get the Firefox add-on" : "Add to \(label)" }
+}
+
+struct BrowserListing: Decodable { let browsers: [BrowserRow] }
+
+enum SourceLabel {
+    static func of(_ source: String?) -> String {
+        switch source {
+        case "chrome-web-store": "Chrome Web Store"
+        case "edge-add-ons": "Edge Add-ons"
+        case "firefox": "Firefox add-on"
+        default: "unpacked"
+        }
+    }
+}
+
+struct InstallStamp: Decodable, Equatable {
+    let version: String
+    let installedAt: String
+}
+
+enum Timestamp {
+    private static let parser: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let relative: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter
+    }()
+
+    static func date(_ text: String) -> Date? { parser.date(from: text) }
+
+    static func ago(_ text: String, now: Date = Date()) -> String {
+        guard let date = date(text) else { return text }
+        return ago(date, now: now)
+    }
+
+    static func ago(_ date: Date, now: Date = Date()) -> String {
+        if now.timeIntervalSince(date) < 5 { return "just now" }
+        return relative.localizedString(for: date, relativeTo: now)
+    }
+}
+
+enum Version {
+    static func isNewer(_ candidate: String, than current: String) -> Bool {
+        let release: (String) -> [Int] = { version in
+            version.split(separator: "-")[0].split(separator: ".").map { Int($0) ?? 0 }
+        }
+        let a = release(candidate), b = release(current)
+        for index in 0..<3 {
+            let left = index < a.count ? a[index] : 0, right = index < b.count ? b[index] : 0
+            if left != right { return left > right }
+        }
+        return false
+    }
+
+    static func major(_ version: String) -> Int {
+        Int(version.trimmingCharacters(in: CharacterSet(charactersIn: "v \n")).split(separator: ".").first ?? "") ?? 0
+    }
+}
+
+/// `browsentic android --json`, and the control socket's `android` answer without `guide` and `report`. Every field is optional, so an older or newer Bridge still decodes.
+struct AndroidState: Decodable, Equatable {
+    struct Problem: Decodable, Equatable {
+        let code: String
+        let message: String
+        let fix: String?
+        let action: String?
+    }
+
+    struct Adb: Decodable, Equatable {
+        let found: Bool?
+        let path: String?
+        let version: String?
+        let problem: Problem?
+    }
+
+    struct Chrome: Decodable, Equatable {
+        let installed: Bool?
+        let version: String?
+        let running: Bool?
+        let debuggable: Bool?
+    }
+
+    struct Device: Decodable, Identifiable, Equatable {
+        let serial: String
+        let transport: String?
+        let state: String?
+        let model: String?
+        let android: String?
+        let chrome: Chrome?
+        let problem: Problem?
+
+        var id: String { serial }
+    }
+
+    struct Session: Decodable, Equatable {
+        let serial: String
+        let since: String?
+    }
+
+    struct GuideStep: Decodable, Equatable, Identifiable {
+        let title: String
+        let detail: String
+        let platform: String?
+
+        var id: String { title }
+    }
+
+    /// One row of the checklist the CLI prints, worded once in src/lib/phone/checks.ts for every surface.
+    struct Check: Decodable, Equatable, Identifiable {
+        let label: String
+        let mark: String
+        let value: String
+        let fix: String?
+        let action: String?
+        let code: String?
+
+        var id: String { label }
+        var failed: Bool { mark == "failed" }
+    }
+
+    struct Section: Decodable, Equatable, Identifiable {
+        let serial: String?
+        let checks: [Check]
+
+        var id: String { serial ?? checks.first?.label ?? "" }
+    }
+
+    struct Report: Decodable, Equatable {
+        let sections: [Section]
+        let ready: Bool?
+        let guided: Bool?
+        let summary: String?
+    }
+
+    let enabled: Bool?
+    let ready: Bool?
+    let adb: Adb?
+    let devices: [Device]?
+    let problem: Problem?
+    let session: Session?
+    let guide: [GuideStep]?
+    let report: Report?
+
+    var isReady: Bool { ready == true }
+}

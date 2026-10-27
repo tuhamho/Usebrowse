@@ -1,0 +1,222 @@
+import { randomUUID } from 'node:crypto';
+import { WebSocket } from 'ws';
+import { awaitMonitor } from '@/lib/actions/page/await-monitor';
+import { PICK_DEFAULT_TIMEOUT_MS, pickElement } from '@/lib/actions/page/pick-element';
+import { SOLVE_CAPTCHA_TIMEOUT_MS, solveCaptcha } from '@/lib/actions/page/solve-captcha';
+import { startMonitor } from '@/lib/actions/page/start-monitor';
+import { ANDROID_PROTOCOL, failure, type ActionResult } from '@/lib/actions/protocol';
+import type { AgentKind, AgentState } from '@/lib/agents/catalog';
+import type { AndroidState } from '@/lib/phone/types';
+import { AWAIT_DEFAULT_TIMEOUT_MS } from '@/lib/monitor/events';
+import type { Approver, BlockedBrowser, GrantOutcome, PairRequestSummary, PairingMode } from '@/lib/pairing';
+import type { QueuedNotice } from '@/lib/notices';
+import type { Bridge, BridgeStatus, ControlMessage, ControlRequest, Described, SessionSummary } from './control';
+
+const REQUEST_TIMEOUT_MS = 60_000;
+
+export class RemoteBridge implements Bridge {
+  private readonly pending = new Map<string, (message: ControlMessage) => void>();
+  private readonly manifestListeners = new Set<() => void>();
+  private readonly androidListeners = new Set<(state: AndroidState) => void>();
+  private readonly pairRequestListeners = new Set<() => void>();
+  private readonly noticeListeners = new Set<() => void>();
+
+  private constructor(
+    private readonly socket: WebSocket,
+    private readonly runId?: string,
+  ) {
+    socket.on('message', (raw) => this.receive(String(raw)));
+  }
+
+  static connect(port: number, token: string, runId?: string): Promise<RemoteBridge> {
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/control`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      socket.once('open', () => resolve(new RemoteBridge(socket, runId)));
+      socket.once('error', reject);
+    });
+  }
+
+  async describe(): Promise<Described> {
+    const reply = await this.request({ id: randomUUID(), op: 'describe', runId: this.runId });
+    if (!reply || !('tools' in reply)) return { tools: [] };
+    const { tools, reserved, withheld, onDemand, delivery } = reply;
+    return { tools, reserved, withheld, onDemand, delivery };
+  }
+
+  async invoke(action: string, input?: unknown, signal?: AbortSignal): Promise<ActionResult> {
+    const reply = await this.request(
+      { id: randomUUID(), op: 'invoke', action, input, runId: this.runId, keepAlive: true },
+      invokeTimeoutFor(action, input),
+      signal,
+    );
+    if (reply && 'result' in reply) return reply.result;
+    if (signal?.aborted) return failure('CANCELLED', 'The caller stopped waiting for this call.');
+    return failure('DAEMON_UNREACHABLE', 'The Browsentic daemon did not respond');
+  }
+
+  async status(timeoutMs = REQUEST_TIMEOUT_MS): Promise<BridgeStatus> {
+    const reply = await this.request({ id: randomUUID(), op: 'status' }, timeoutMs);
+    if (reply && 'status' in reply) return reply.status;
+    throw new Error('The Browsentic daemon did not respond to a status request');
+  }
+
+  /** Null when nothing answered in time: a Bridge older than grants never answers the op at all. */
+  async grant(request: Omit<Extract<ControlRequest, { op: 'grant' }>, 'id' | 'op'>, timeoutMs: number): Promise<GrantOutcome | null> {
+    const reply = await this.request({ id: randomUUID(), op: 'grant', ...request }, timeoutMs);
+    return reply && 'outcome' in reply ? reply.outcome : null;
+  }
+
+  /** `watch` makes this caller an approver, told whenever the list changes. */
+  async pairRequests(watch?: Approver): Promise<PairRequestSummary[]> {
+    const reply = await this.request({ id: randomUUID(), op: 'pairRequests', ...(watch ? { watch: true, as: watch } : {}) });
+    return reply && 'requests' in reply ? reply.requests : [];
+  }
+
+  async decide(request: string, allow: boolean, label?: string): Promise<{ ok: boolean; error?: string }> {
+    const reply = await this.request({ id: randomUUID(), op: 'decide', request, allow, ...(label ? { label } : {}) });
+    return reply && 'op' in reply && reply.op === 'decide' ? { ok: reply.ok, error: reply.error } : { ok: false, error: 'The Bridge did not answer.' };
+  }
+
+  async pairing(set?: PairingMode): Promise<{ mode: PairingMode; approver: Approver; error?: string } | null> {
+    const reply = await this.request({ id: randomUUID(), op: 'pairing', ...(set ? { set } : {}) }, 5_000);
+    return reply && 'op' in reply && reply.op === 'pairing' ? { mode: reply.mode, approver: reply.approver, error: reply.error } : null;
+  }
+
+  async blocked(): Promise<BlockedBrowser[]> {
+    const reply = await this.request({ id: randomUUID(), op: 'blocked' }, 5_000);
+    return reply && 'blocked' in reply ? reply.blocked : [];
+  }
+
+  async label(session: string, label: string): Promise<boolean> {
+    const reply = await this.request({ id: randomUUID(), op: 'label', session, label }, 5_000);
+    return !!reply && 'op' in reply && reply.op === 'label' && reply.ok;
+  }
+
+  onPairRequestsChanged(listener: () => void): void {
+    this.pairRequestListeners.add(listener);
+  }
+
+  /** Shows the browsers' notices from now on, while `allowed` says notifications will appear. */
+  async watchNotices(allowed: boolean): Promise<boolean> {
+    const reply = await this.request({ id: randomUUID(), op: 'notices', watch: true, allowed }, 5_000);
+    return !!reply && 'op' in reply && reply.op === 'notices' && reply.ok;
+  }
+
+  async takeNotices(): Promise<QueuedNotice[]> {
+    const reply = await this.request({ id: randomUUID(), op: 'takeNotices' }, 5_000);
+    return reply && 'notices' in reply ? reply.notices : [];
+  }
+
+  async openNotice(notice: string): Promise<boolean> {
+    const reply = await this.request({ id: randomUUID(), op: 'openNotice', notice }, 5_000);
+    return !!reply && 'op' in reply && reply.op === 'openNotice' && reply.ok;
+  }
+
+  onNoticesChanged(listener: () => void): void {
+    this.noticeListeners.add(listener);
+  }
+
+  async pair(): Promise<{ code: string; expiresAt: number }> {
+    const reply = await this.request({ id: randomUUID(), op: 'pair' });
+    if (reply && 'code' in reply) return reply;
+    throw new Error('The Browsentic daemon did not issue a pairing code');
+  }
+
+  async sessions(): Promise<SessionSummary[]> {
+    const reply = await this.request({ id: randomUUID(), op: 'sessions' });
+    return reply && 'sessions' in reply ? reply.sessions : [];
+  }
+
+  async agent(change?: { set?: AgentKind; grant?: AgentKind; models?: AgentKind }): Promise<AgentState> {
+    const reply = await this.request({ id: randomUUID(), op: 'agent', ...change });
+    if (reply && 'op' in reply && reply.op === 'agent') return reply.state;
+    throw new Error('The Browsentic daemon did not answer about its agent');
+  }
+
+  /** A Bridge older than Android leaves the op unanswered, so it is asked its protocol first rather than waited on for a minute. */
+  async android(request?: { launch?: string; url?: string; watch?: boolean; peek?: boolean }): Promise<ActionResult<AndroidState>> {
+    const { protocolVersion } = await this.status();
+    if (protocolVersion < ANDROID_PROTOCOL) {
+      return failure(
+        'UNSUPPORTED',
+        `The Browsentic Bridge that is running speaks protocol ${protocolVersion}, and Android needs ${ANDROID_PROTOCOL}. Run "browsentic restart" to start the one installed.`,
+      );
+    }
+    const reply = await this.request({ id: randomUUID(), op: 'android', ...request });
+    if (reply && 'op' in reply && reply.op === 'android') return reply.result;
+    return failure('DAEMON_UNREACHABLE', 'The Browsentic daemon did not answer about Android');
+  }
+
+  onAndroidChanged(listener: (state: AndroidState) => void): void {
+    this.androidListeners.add(listener);
+  }
+
+  /** A browser is named by its session id; an origin still unpairs every browser presenting it. */
+  async revoke(browser?: string): Promise<number> {
+    const named = browser?.includes('://') ? { origin: browser } : { session: browser };
+    const reply = await this.request({ id: randomUUID(), op: 'revoke', ...named });
+    return reply && 'revoked' in reply ? reply.revoked : 0;
+  }
+
+  onManifestChanged(listener: () => void): void {
+    this.manifestListeners.add(listener);
+  }
+
+  async close(): Promise<void> {
+    this.socket.close(1000, 'client exiting');
+  }
+
+  private request(request: ControlRequest, timeoutMs = REQUEST_TIMEOUT_MS, signal?: AbortSignal): Promise<ControlMessage | null> {
+    if (this.socket.readyState !== WebSocket.OPEN || signal?.aborted) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cancel = () => {
+        if (this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ id: request.id, op: 'cancel' }));
+        finish(null);
+      };
+      const finish = (message: ControlMessage | null) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', cancel);
+        this.pending.delete(request.id);
+        resolve(message);
+      };
+      const wait = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => finish(null), timeoutMs);
+      };
+      wait();
+      this.pending.set(request.id, (message) => ('op' in message && message.op === 'working' ? wait() : finish(message)));
+      signal?.addEventListener('abort', cancel, { once: true });
+      this.socket.send(JSON.stringify(request));
+    });
+  }
+
+  private receive(raw: string): void {
+    let message: ControlMessage;
+    try {
+      message = JSON.parse(raw) as ControlMessage;
+    } catch {
+      return;
+    }
+    if ('event' in message) {
+      if (message.event === 'manifest-changed') for (const listener of this.manifestListeners) listener();
+      if (message.event === 'android-changed') for (const listener of this.androidListeners) listener(message.state);
+      if (message.event === 'pair-requests-changed') for (const listener of this.pairRequestListeners) listener();
+      if (message.event === 'notices-changed') for (const listener of this.noticeListeners) listener();
+      return;
+    }
+    this.pending.get(message.id)?.(message);
+  }
+}
+
+function invokeTimeoutFor(action: string, input?: unknown): number {
+  if (action === startMonitor.name) return REQUEST_TIMEOUT_MS;
+  const declared = (input as { timeoutMs?: unknown } | undefined)?.timeoutMs;
+  if (typeof declared === 'number' && declared > 0) return declared + 10_000;
+  if (action === awaitMonitor.name) return AWAIT_DEFAULT_TIMEOUT_MS + 10_000;
+  if (action === pickElement.name) return PICK_DEFAULT_TIMEOUT_MS + 10_000;
+  if (action === solveCaptcha.name) return SOLVE_CAPTCHA_TIMEOUT_MS + 10_000;
+  return REQUEST_TIMEOUT_MS;
+}

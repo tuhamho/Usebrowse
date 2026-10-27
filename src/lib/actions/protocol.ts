@@ -1,0 +1,403 @@
+import type { ToolDescriptor } from './manifest';
+import type { AgentKind, AgentState } from '@/lib/agents/catalog';
+import type { FileReport, FileVerdict } from '@/lib/files/report';
+import type { MonitorSample } from '@/lib/monitor/events';
+import type { RecordedEvent } from '@/lib/recordings/events';
+import type { RecordingWorkflow } from '@/lib/recordings/workflow';
+import type { AndroidState, PhoneClosedReason, PhoneContext, PhoneOpened } from '@/lib/phone/types';
+import type { PreferenceChange, Preferences } from '@/lib/settings/preferences';
+import type { SkillCategory, SkillDraft } from '@/lib/skills/format';
+import type { SiteMapDraft } from '@/lib/skills/site-map';
+import type { TaskContext, TaskList, TaskOrder, TaskResult } from '@/lib/schedules/task';
+import type { RefusalCode } from '@/lib/pairing';
+import type { DeviceNotice } from '@/lib/notices';
+
+export const ACTION_CHANNEL = 'browsentic/action';
+export const BRIDGE_CHANNEL = 'browsentic/bridge';
+
+export const SOCKET_PROTOCOL_VERSION = 25;
+
+/** The first protocol with the Android frames: `androidInfo`, the phone requests, `cdpEvent` and `phoneClosed`. */
+export const ANDROID_PROTOCOL = 23;
+
+/**
+ * The first protocol whose extension knows each agent added since the compatibility window opened.
+ * An older panel looks every agent up by kind, so it is never told about one it does not know.
+ */
+export const AGENT_PROTOCOL: Partial<Record<AgentKind, number>> = { deepseek: 25 };
+
+/**
+ * The oldest extension the daemon lets in. A store copy updates when its browser decides to, so it
+ * and the daemon are routinely a version apart: a change a peer can do without bumps
+ * SOCKET_PROTOCOL_VERSION and is sent only to a peer that speaks it, and only a change neither side
+ * can do without raises this.
+ */
+export const MIN_EXTENSION_PROTOCOL = 22;
+
+export const EXTERNAL_RUN_ID = 'external';
+
+export const DAEMON_PORTS = [8765, 8766, 8767] as const;
+
+/** The native messaging host the extension asks to start the daemon when no port answers. */
+export const NATIVE_HOST_NAME = 'com.browsentic.daemon';
+
+export interface ActionInvocation {
+  channel: typeof ACTION_CHANNEL;
+  action: string;
+  input?: unknown;
+}
+
+export type BridgeRequest =
+  | { channel: typeof BRIDGE_CHANNEL; op: 'describe' }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'invoke'; action: string; input?: unknown }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'pair'; token: string }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'disconnect' }
+  /** A page opened, or someone pressed Connect: pair through the native host. `wait` holds the ask open while a person decides. */
+  | { channel: typeof BRIDGE_CHANNEL; op: 'autoPair'; gesture?: boolean; wait?: boolean }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'panelOpened' }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'saveSkill'; skillId: string }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'removeSkill'; skillId: string }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'nameSession'; sessionId: string }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'recordEvents'; events: RecordedEvent[] }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'recordingState' }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'analyzeRecording'; recordingId: string }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'monitorSample'; monitorId: string; sample: MonitorSample }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'monitorState' }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'listSkills'; refresh?: boolean }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'agentState'; refresh?: boolean }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'setAgent'; agent: AgentKind }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'setAgentModel'; agent: AgentKind; model: string | null }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'grantAgent'; agent: AgentKind }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'preferences' }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'setPreference'; change: PreferenceChange }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'tasks' }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'saveTask'; task: unknown }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'deleteTask'; taskId: string }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'runTaskNow'; taskId: string }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'pauseTasks'; paused: boolean }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'phoneStart'; serial: string; windowId?: number }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'phoneEnd' }
+  | { channel: typeof BRIDGE_CHANNEL; op: 'phoneOpenChrome' };
+
+export type ActionResult<T = unknown> =
+  | { ok: true; data: T }
+  | { ok: false; error: { code: string; message: string } };
+
+export type RunEvent =
+  | { kind: 'started'; skill: string; attached?: string; overlays?: string[] }
+  | { kind: 'text'; delta: string }
+  | { kind: 'tool'; toolId: string; action: string; input: unknown; source?: 'local' | 'external' }
+  | { kind: 'approval'; toolId: string; action: string; input: unknown; site?: string }
+  | { kind: 'toolResult'; toolId: string; ok: boolean; summary: string }
+  | { kind: 'session'; agent: AgentKind; agentSessionId: string | null }
+  | { kind: 'attachments'; files: HandedFile[] }
+  | { kind: 'usage'; usage: TokenUsage }
+  | { kind: 'done'; stopReason: string }
+  | { kind: 'error'; code: string; message: string };
+
+/** Token counts as the agent CLI reported them, normalized by its runner. */
+export interface TokenUsage {
+  /** Tokens occupying the model's context window after its last call — prompt, cache and reply together. */
+  contextTokens: number;
+  /** Tokens the model generated over the run that reported this. */
+  outputTokens: number;
+}
+
+/** Which secret the extension is about to prove it holds. The secret itself never crosses the wire. */
+export type SocketAuth = { kind: 'pair' } | { kind: 'session' };
+
+export interface AttachedFile {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  /** Absent while the file analyst is still reading it. */
+  report?: FileReport;
+  /** The conversation's agent session already holds this report, so it is not handed over again. */
+  delivered: boolean;
+}
+
+/** A report handed to the agent with this turn. */
+export interface HandedFile {
+  id: string;
+  name: string;
+  verdict: FileVerdict;
+  code?: string;
+}
+
+/** An element the user pointed at with A-Eye. It rides along with the next instruction and scopes it. */
+export interface FocusedElement {
+  tag: string;
+  role?: string;
+  selector: string;
+  label?: string;
+  content: string;
+  truncated: boolean;
+  url: string;
+  title: string;
+  /** Data URL of the element photographed at the instant it was picked. */
+  shot?: string;
+}
+
+export const focusName = (focus: FocusedElement): string => focus.label?.trim() || focus.role || focus.tag;
+
+export interface SavedRecording {
+  id: string;
+  name: string;
+  host: string;
+  goal?: string;
+  steps?: number;
+  capturedValues: boolean;
+  durationMs: number;
+}
+
+export interface RecordingPayload {
+  id: string;
+  name: string;
+  host: string;
+  startUrl: string;
+  captureValues: boolean;
+  durationMs: number;
+  events: RecordedEvent[];
+}
+
+export interface RunContext {
+  url?: string;
+  tabId?: number;
+  /** The tab-bound conversation this run belongs to. Scopes one-at-a-time and the held conversation. */
+  sessionId?: string;
+  files?: AttachedFile[];
+  recordings?: SavedRecording[];
+  /** The agent that issued `agentSessionId`; a different agent cannot resume it. */
+  agent?: AgentKind;
+  agentSessionId?: string;
+  /** Opaque handle from the skill catalog. The daemon resolves it to a skill it enumerated itself and attaches the content at spawn; a path never crosses the wire. */
+  agentSkillId?: string;
+  /** The element the user pointed at with A-Eye before sending this message. */
+  focus?: FocusedElement;
+  /**
+   * The composer's “Live tool” switch. Off unless the user turned it on for this
+   * message, and nothing else can turn it on — it is what lets the agent write and run
+   * its own page code, so it stays a deliberate act rather than a capability that is
+   * simply there.
+   */
+  liveTools?: boolean;
+  /** Set when a schedule started this run: nobody is watching it, and it should end on one line saying what it found. */
+  task?: TaskContext;
+  /** Set when the run drives Chrome on an Android phone through the mirror tab. */
+  phone?: PhoneContext;
+}
+
+/** One skill from the active agent CLI's own library. Title and handle only — the file's path and content stay on the daemon's side. */
+export interface AgentSkillMeta {
+  id: string;
+  name: string;
+  description: string;
+}
+
+/** A Browsentic skill projected for the picker: everything but the body. */
+export interface CatalogSkill {
+  name: string;
+  description: string;
+  category: SkillCategory;
+  domains: string[];
+  source: 'bundled' | 'user' | 'uploaded';
+}
+
+export interface SkillCatalog {
+  /** The agent whose library `agentSkills` came from; switching agents replaces the catalog. */
+  agent: AgentKind;
+  skills: CatalogSkill[];
+  agentSkills: AgentSkillMeta[];
+}
+
+export type SocketFrame =
+  | {
+      t: 'hello';
+      protocolVersion: number;
+      /** The oldest daemon this extension works with. Absent from an extension that predates the window. */
+      minDaemonProtocol?: number;
+      extensionVersion: string;
+      manifestHash: string;
+      auth: SocketAuth;
+      nonce: string;
+      /**
+       * Which browser profile this is. The extension origin cannot say: every Chromium browser
+       * loading the same unpacked folder presents the same one.
+       */
+      installId: string;
+      browser?: string;
+    }
+  | { t: 'challenge'; nonce: string }
+  | { t: 'prove'; proof: string }
+  | {
+      t: 'welcome';
+      daemonVersion: string;
+      /** What the daemon speaks, so a newer extension sends it nothing past that. Absent before 0.8. */
+      protocolVersion?: number;
+      manifestHash: string;
+      manifestInSync: boolean;
+      /** Proves the daemon holds the same secret, so a port squatter cannot pose as one. */
+      proof: string;
+      sealedSessionKey?: string;
+    }
+  /** `code` says what an extension that pairs by itself may do about it; `reason` keeps the words shipped extensions read. */
+  | { t: 'unauthorized'; reason: string; retryable: boolean; code?: RefusalCode }
+  | { t: 'describe'; id: string }
+  | { t: 'manifest'; id: string; tools: ToolDescriptor[] }
+  | { t: 'invoke'; id: string; action: string; input?: unknown; tabId?: number; runId?: string }
+  | { t: 'result'; id: string; result: ActionResult }
+  | { t: 'ping'; id: string }
+  | { t: 'pong'; id: string }
+  | { t: 'focus' }
+  /** A finished monitor, task or timer for the Browsentic app to show while the browser is behind. Protocol 24. */
+  | { t: 'notice'; id: string; notice: DeviceNotice }
+  /** Whether an app that may show notifications took it; false sends the browser back to its own card. */
+  | { t: 'noticeAck'; id: string; delivered: boolean }
+  /** Someone clicked that notice: bring its tab to the front. */
+  | { t: 'openNotice'; noticeId: string }
+  | { t: 'instruct'; id: string; text: string; context?: RunContext }
+  | { t: 'cancel'; id: string }
+  | { t: 'decision'; id: string; toolId: string; allow: boolean; remember?: boolean }
+  | { t: 'reset'; sessionId?: string }
+  | { t: 'run'; id: string; event: RunEvent }
+  | {
+      t: 'analyzeFile';
+      id: string;
+      fileId: string;
+      sessionId: string;
+      name: string;
+      mime: string;
+      size: number;
+      /** Base64, and empty for a file over MAX_STORED_FILE_BYTES — its size alone is enough to reject it. */
+      content: string;
+    }
+  | { t: 'fileReport'; id: string; result: ActionResult<FileReport> }
+  | { t: 'cancelAnalysis'; id: string; fileId: string }
+  | { t: 'saveSkill'; id: string; skill: SkillDraft }
+  | { t: 'deleteSkill'; id: string; name: string }
+  | { t: 'deleteSiteMap'; id: string; name: string }
+  | { t: 'skillResult'; id: string; result: ActionResult<SavedSkill> }
+  | { t: 'siteMapDraft'; id: string; draft: SiteMapDraft }
+  | { t: 'activateSiteMap'; id: string; stagingId: string; exactHost?: boolean }
+  | { t: 'discardSiteMap'; id: string; stagingId: string }
+  | { t: 'nameSession'; id: string; host?: string; messages: string[] }
+  | { t: 'sessionName'; id: string; result: ActionResult<{ title: string }> }
+  | { t: 'analyzeRecording'; id: string; recording: RecordingPayload }
+  | { t: 'recordingWorkflow'; id: string; result: ActionResult<RecordingAnalysis> }
+  | { t: 'agentState'; id: string; refresh?: boolean }
+  | { t: 'setAgent'; id: string; agent: AgentKind }
+  | { t: 'setAgentModel'; id: string; agent: AgentKind; model: string | null }
+  | { t: 'grantAgent'; id: string; agent: AgentKind }
+  | { t: 'agentInfo'; id: string; result: ActionResult<AgentState> }
+  | { t: 'listSkills'; id: string; refresh?: boolean }
+  | { t: 'skillCatalog'; id: string; result: ActionResult<SkillCatalog> }
+  | { t: 'preferences'; id: string }
+  | { t: 'setPreference'; id: string; change: PreferenceChange }
+  | { t: 'preferencesInfo'; id: string; result: ActionResult<Preferences> }
+  | { t: 'tasks'; id: string }
+  | { t: 'saveTask'; id: string; task: unknown }
+  | { t: 'deleteTask'; id: string; taskId: string }
+  | { t: 'runTaskNow'; id: string; taskId: string }
+  | { t: 'pauseTasks'; id: string; paused: boolean }
+  | { t: 'taskDone'; id: string; taskId: string; result: TaskResult }
+  | { t: 'taskList'; id: string; result: ActionResult<TaskList> }
+  | { t: 'runTask'; id: string; order: TaskOrder }
+  | { t: 'androidInfo'; id: string; result: ActionResult<AndroidState> }
+  | { t: 'phoneOpen'; id: string; serial: string }
+  | { t: 'phoneOpened'; id: string; result: ActionResult<PhoneOpened> }
+  | { t: 'phoneClose'; id: string; serial: string }
+  | { t: 'phoneLaunch'; id: string; serial: string; url?: string }
+  | { t: 'cdp'; id: string; serial: string; method: string; params?: Record<string, unknown>; sessionId?: string; timeoutMs?: number }
+  | { t: 'cdpResult'; id: string; result: ActionResult<Record<string, unknown>> }
+  | { t: 'cdpEvent'; serial: string; method: string; params: Record<string, unknown>; sessionId?: string }
+  | { t: 'phoneClosed'; serial: string; reason: PhoneClosedReason };
+
+export interface RecordingAnalysis {
+  workflow: RecordingWorkflow;
+  warnings: string[];
+}
+
+export interface SavedSkill {
+  name: string;
+  path?: string;
+  replaced?: boolean;
+}
+
+export const EXTENSION_REQUEST_FRAMES = [
+  'instruct',
+  'cancel',
+  'decision',
+  'reset',
+  'analyzeFile',
+  'cancelAnalysis',
+  'saveSkill',
+  'deleteSkill',
+  'deleteSiteMap',
+  'activateSiteMap',
+  'discardSiteMap',
+  'nameSession',
+  'analyzeRecording',
+  'agentState',
+  'setAgent',
+  'setAgentModel',
+  'grantAgent',
+  'listSkills',
+  'preferences',
+  'setPreference',
+  'tasks',
+  'saveTask',
+  'deleteTask',
+  'runTaskNow',
+  'pauseTasks',
+  'taskDone',
+  'phoneOpen',
+  'phoneClose',
+  'phoneLaunch',
+  'cdp',
+  'notice',
+] as const;
+
+export type ExtensionRequest = Extract<SocketFrame, { t: (typeof EXTENSION_REQUEST_FRAMES)[number] }>;
+
+export function isExtensionRequest(frame: SocketFrame): frame is ExtensionRequest {
+  return (EXTENSION_REQUEST_FRAMES as readonly string[]).includes(frame.t);
+}
+
+const INSTALL_ID = /^[A-Za-z0-9_-]{16,64}$/;
+
+export function isInstallId(value: unknown): value is string {
+  return typeof value === 'string' && INSTALL_ID.test(value);
+}
+
+export function parseFrame(raw: string): SocketFrame | null {
+  try {
+    const frame = JSON.parse(raw);
+    return typeof frame?.t === 'string' ? (frame as SocketFrame) : null;
+  } catch {
+    return null;
+  }
+}
+
+export const success = <T>(data: T): ActionResult<T> => ({ ok: true, data });
+
+export const failure = (code: string, message: string): ActionResult<never> => ({
+  ok: false,
+  error: { code, message },
+});
+
+export function isActionInvocation(message: unknown): message is ActionInvocation {
+  return isOnChannel(message, ACTION_CHANNEL) && typeof (message as ActionInvocation).action === 'string';
+}
+
+export function isBridgeRequest(message: unknown): message is BridgeRequest {
+  return isOnChannel(message, BRIDGE_CHANNEL);
+}
+
+function isOnChannel(message: unknown, channel: string): boolean {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { channel?: unknown }).channel === channel
+  );
+}

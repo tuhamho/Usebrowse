@@ -1,0 +1,250 @@
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
+import { AGENT_KINDS, AGENTS, type AgentKind } from '@/lib/agents/catalog';
+import { stateDir } from '../../lockfile';
+import type { AgentConfig, AgentSettings } from '../config';
+import { MCP_RULE, settingsPath } from './antigravity';
+import { stubCli } from './fixtures/support';
+import { agentState, grantRunner, mcpServerFor, refreshModelLists, RUNNERS, runnerFor, versionOf } from './index';
+
+const bin = join(stateDir, 'stub-bin');
+const probes = join(stateDir, 'probes.log');
+
+/**
+ * A stand-in CLI that notes each version probe, then answers --version the given way. Only the
+ * version probe is recorded: a runner's `check()` may call the binary again — Cursor asks it
+ * whether it is signed in — and those are not what `rounds()` is counting.
+ */
+const stub = (name: string, { prints = `${name} 1.0.0`, exit = 0 } = {}) =>
+  stubCli(
+    join(bin, name),
+    `if (process.argv[2] === '--version') require('node:fs').appendFileSync(${JSON.stringify(probes)}, ${JSON.stringify(`${name}\n`)});
+console.error(${JSON.stringify(prints)});
+process.exit(${exit});`,
+  );
+
+/** The stubs probed so far, a round at a time. Every agent is probed at once, so each round is sorted. */
+const rounds = () => {
+  const lines = readFileSync(probes, 'utf8').split('\n').filter(Boolean);
+  const size = AGENT_KINDS.length;
+  return [lines.slice(0, size).sort(), lines.slice(size, size * 2).sort()].filter((round) => round.length);
+};
+
+const configWith = (agents: Partial<Record<AgentKind, AgentSettings>>, agent: AgentKind = 'claude'): AgentConfig => ({
+  agent,
+  agents: {
+    claude: { bin: join(bin, 'claude') },
+    codex: { bin: join(bin, 'codex') },
+    antigravity: { bin: join(bin, 'agy') },
+    vibe: { bin: join(bin, 'vibe') },
+    grok: { bin: join(bin, 'grok') },
+    cursor: { bin: join(bin, 'cursor-agent') },
+    qwen: { bin: join(bin, 'qwen') },
+    opencode: { bin: join(bin, 'opencode') },
+    deepseek: { bin: join(bin, 'dsh') },
+    ...agents,
+  },
+  requireApproval: [],
+});
+
+const runner = async (kind: AgentKind, config: AgentConfig) =>
+  (await agentState(config, { refresh: true })).runners.find((status) => status.kind === kind);
+
+describe('the registry', () => {
+  test('every agent in the catalog has a runner that answers to its name', () => {
+    expect(AGENT_KINDS.map((kind) => RUNNERS[kind].kind)).toEqual([...AGENT_KINDS]);
+  });
+
+  test('the configured agent is the one that runs, with its own settings', () => {
+    const config = configWith({ codex: { bin: '/opt/codex', model: 'gpt-5.4' } }, 'codex');
+    expect(runnerFor(config)).toEqual({ runner: RUNNERS.codex, settings: { kind: 'codex', bin: '/opt/codex', model: 'gpt-5.4' } });
+  });
+
+  test("the MCP server an agent is handed is this CLI's own, serving MCP for that run", () => {
+    const server = mcpServerFor('run-7');
+    expect({ command: server.command, cli: basename(server.args[0]), args: server.args.slice(1), env: server.env }).toEqual({
+      command: process.execPath,
+      cli: 'cli.js',
+      args: ['mcp'],
+      env: { BROWSENTIC_AGENT_RUN: 'run-7' },
+    });
+  });
+
+  test('an agent that keeps long results from its model has its server told the limit', () => {
+    expect([mcpServerFor('run-7', RUNNERS.cursor.limits).env, mcpServerFor('run-7', RUNNERS.claude.limits).env]).toEqual([
+      { BROWSENTIC_AGENT_RUN: 'run-7', BROWSENTIC_RESULT_BYTES: '40000' },
+      { BROWSENTIC_AGENT_RUN: 'run-7' },
+    ]);
+  });
+});
+
+describe('readiness probes', () => {
+  beforeAll(() => {
+    mkdirSync(bin, { recursive: true });
+    for (const name of ['claude', 'claude-next', 'codex', 'agy', 'vibe', 'grok', 'cursor-agent', 'qwen', 'opencode', 'dsh']) stub(name);
+    stub('opencode2', { prints: 'opencode v2.0.32' });
+    stub('codex-expired', { prints: 'licence expired', exit: 3 });
+  });
+
+  beforeEach(() => {
+    rmSync(probes, { force: true });
+    rmSync(join(homedir(), '.gemini'), { recursive: true, force: true });
+    rmSync(join(homedir(), '.grok'), { recursive: true, force: true });
+    vi.stubEnv('XAI_API_KEY', '');
+    vi.stubEnv('GROK_HOME', '');
+    vi.stubEnv('QWEN_API_KEY', 'qwen-key');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test('an installed agent is ready, with the version it printed', async () => {
+    expect(await runner('claude', configWith({}))).toMatchObject({ ready: true, version: 'claude 1.0.0' });
+  });
+
+  test('an agent that is not installed is missing, with the command that installs it', async () => {
+    expect(await runner('codex', configWith({ codex: { bin: join(bin, 'no-such-codex') } }))).toMatchObject({
+      ready: false,
+      problem: { code: 'AGENT_MISSING', fix: AGENTS.codex.install },
+    });
+  });
+
+  test('an agent whose version check fails is unusable, and says what it printed', async () => {
+    const expired = join(bin, 'codex-expired');
+    expect((await runner('codex', configWith({ codex: { bin: expired } })))?.problem).toEqual({
+      code: 'AGENT_UNUSABLE',
+      message: `"${expired} --version" failed: licence expired.`,
+      fix: AGENTS.codex.install,
+    });
+  });
+
+  test('an agent that cannot be started at all is unusable on its own, and the rest still answer', async () => {
+    const state = await agentState(configWith({ codex: { bin: `${join(bin, 'codex')}\0` } }), { refresh: true });
+    expect(state.runners.find((status) => status.kind === 'codex')).toMatchObject({
+      ready: false,
+      problem: { code: 'AGENT_UNUSABLE', fix: expect.stringContaining('"codex":{"bin"') },
+    });
+    expect(state.runners.find((status) => status.kind === 'claude')).toMatchObject({ ready: true });
+  });
+
+  test('an installed agent that still needs setting up is not ready, and says why', async () => {
+    expect(await runner('antigravity', configWith({}))).toMatchObject({
+      ready: false,
+      version: 'agy 1.0.0',
+      problem: { code: 'AGENT_NEEDS_PERMISSION', grantable: true },
+    });
+  });
+
+  test('a Grok Build nobody signed in to is not ready, and says how to sign in', async () => {
+    expect(await runner('grok', configWith({}))).toMatchObject({
+      ready: false,
+      version: 'grok 1.0.0',
+      problem: { code: 'AGENT_NEEDS_PERMISSION', fix: 'grok login' },
+    });
+  });
+
+  test('a Grok Build that is signed in, or has an API key, is ready', async () => {
+    const signedIn = join(homedir(), '.grok', 'auth.json');
+    mkdirSync(dirname(signedIn), { recursive: true });
+    writeFileSync(signedIn, '{}');
+    const withLogin = await runner('grok', configWith({}));
+    rmSync(signedIn);
+    vi.stubEnv('XAI_API_KEY', 'xai-key');
+    expect([withLogin?.ready, (await runner('grok', configWith({})))?.ready]).toEqual([true, true]);
+  });
+
+  // Its sign-ins moved into a database of Browsentic's own, which only a 2.x check knows to look in.
+  test('the version an agent printed is the one its readiness is checked for', async () => {
+    vi.stubEnv('OPENCODE_API_KEY', '');
+    rmSync(join(stateDir, 'agents', 'opencode'), { recursive: true, force: true });
+    const status = await runner('opencode', configWith({ opencode: { bin: join(bin, 'opencode2') } }));
+    expect(status).toMatchObject({ version: 'opencode v2.0.32', ready: false, problem: { fix: expect.stringContaining('auth login --standalone') } });
+  });
+
+  test('a one-shot is built for the version last probed, and a binary never probed is probed once', async () => {
+    await agentState(configWith({ opencode: { bin: join(bin, 'opencode2') } }), { refresh: true });
+    expect(await versionOf('opencode', join(bin, 'opencode2'))).toBe('opencode v2.0.32');
+    rmSync(probes, { force: true });
+    expect(await versionOf('opencode', join(bin, 'opencode'))).toBe('opencode 1.0.0');
+    expect(await versionOf('opencode', join(bin, 'opencode'))).toBe('opencode 1.0.0');
+    expect(readFileSync(probes, 'utf8')).toBe('opencode\n');
+  });
+
+  test('probes are reused for half a minute, even when only the active agent changed', async () => {
+    await agentState(configWith({}), { refresh: true });
+    const again = await agentState(configWith({}, 'antigravity'));
+    expect([rounds(), again.active]).toEqual([[['agy', 'claude', 'codex', 'cursor-agent', 'dsh', 'grok', 'opencode', 'qwen', 'vibe']], 'antigravity']);
+  });
+
+  test('asking for a refresh probes again', async () => {
+    await agentState(configWith({}), { refresh: true });
+    await agentState(configWith({}), { refresh: true });
+    expect(rounds()).toHaveLength(2);
+  });
+
+  test('a different binary is probed afresh', async () => {
+    await agentState(configWith({}), { refresh: true });
+    await agentState(configWith({ claude: { bin: join(bin, 'claude-next') } }));
+    expect(rounds()).toEqual([
+      ['agy', 'claude', 'codex', 'cursor-agent', 'dsh', 'grok', 'opencode', 'qwen', 'vibe'],
+      ['agy', 'claude-next', 'codex', 'cursor-agent', 'dsh', 'grok', 'opencode', 'qwen', 'vibe'],
+    ]);
+  });
+
+  test('setting an agent up repairs it and forgets the stale probe', async () => {
+    await agentState(configWith({}), { refresh: true });
+    expect(await grantRunner('antigravity')).toBeNull();
+    const state = await agentState(configWith({}));
+    expect([JSON.parse(readFileSync(settingsPath, 'utf8')).permissions.allow, state.runners.find((status) => status.kind === 'antigravity')?.ready]).toEqual([
+      [MCP_RULE],
+      true,
+    ]);
+  });
+
+  test('an installed agent offers the curated models until its own list has been read', async () => {
+    rmSync(join(stateDir, 'models.json'), { force: true });
+    expect((await runner('codex', configWith({})))?.models).toEqual({ ids: AGENTS.codex.models, from: 'catalog', error: undefined });
+  });
+
+  test("once read, an agent offers its CLI's list, and the probe is taken again so the picker sees it", async () => {
+    rmSync(join(stateDir, 'models.json'), { force: true });
+    const codexHome = join(stateDir, 'codex-home');
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(
+      join(codexHome, 'models_cache.json'),
+      JSON.stringify({ models: [{ slug: 'gpt-next', visibility: 'list', priority: 1 }, { slug: 'gpt-5.5', visibility: 'list', priority: 2 }] }),
+    );
+    vi.stubEnv('CODEX_HOME', codexHome);
+    const config = configWith({});
+    await agentState(config, { refresh: true });
+    const changed = await refreshModelLists(config);
+    expect([changed, (await agentState(config)).runners.find((status) => status.kind === 'codex')?.models]).toMatchObject([
+      true,
+      { ids: ['gpt-5.5', 'gpt-next'], from: 'cli' },
+    ]);
+  });
+
+  test('a forced read that finds the same list still shows when it was read', async () => {
+    rmSync(join(stateDir, 'models.json'), { force: true });
+    const codexHome = join(stateDir, 'codex-home');
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'gpt-5.5', visibility: 'list' }] }));
+    vi.stubEnv('CODEX_HOME', codexHome);
+    const config = configWith({});
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    await refreshModelLists(config, { force: true });
+    await agentState(config);
+    now.mockReturnValue(2_000);
+    const changed = await refreshModelLists(config, { force: true });
+    const codex = (await agentState(config)).runners.find((status) => status.kind === 'codex');
+    now.mockRestore();
+    expect([changed, codex?.models?.at]).toEqual([false, 2_000]);
+  });
+
+  test('an agent with nothing to set up reports no problem', async () => {
+    expect(await grantRunner('claude')).toBeNull();
+  });
+});

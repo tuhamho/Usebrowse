@@ -1,0 +1,31 @@
+import type { z } from 'zod';
+import type { ToolGroupName } from './groups';
+
+export interface Action<Input extends z.ZodType = z.ZodType, Output = unknown> {
+  readonly name: string;
+  readonly description: string;
+  readonly input: Input;
+  readonly execute: (input: z.output<Input>) => Output | Promise<Output>;
+  /** Needs Chrome's debugger, which Firefox has no counterpart for, so a Firefox build leaves it off the list it offers. */
+  readonly chromiumOnly?: true;
+  /** A less common capability, taught by its group's guide; ungrouped actions are the core every run is offered. */
+  readonly group?: ToolGroupName;
+}
+
+export type AnyAction = Action<any, any>;
+
+export function defineAction<Input extends z.ZodType, Output>(
+  action: Action<Input, Output>,
+): Action<Input, Output> {
+  return Object.freeze(action);
+}
+
+export class ActionError extends Error {
+  constructor(
+    message: string,
+    readonly code = 'ACTION_FAILED',
+  ) {
+    super(message);
+    this.name = 'ActionError';
+  }
+}

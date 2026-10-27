@@ -1,0 +1,181 @@
+import type { ThemeId } from '@/lib/settings/theme';
+
+export const RAIL_CHANNEL = 'browsentic/rail';
+
+export const PANEL_TABS = ['chat', 'history', 'skills', 'recordings', 'tasks'] as const;
+
+export type PanelTab = (typeof PANEL_TABS)[number];
+
+/** A tab the panel no longer has — Settings moved to its own page — opens on Chat instead. */
+export function isPanelTab(value: unknown): value is PanelTab {
+  return (PANEL_TABS as readonly unknown[]).includes(value);
+}
+
+export type RailTone = 'off' | 'pending' | 'live' | 'busy' | 'listening' | 'warn';
+
+export type RailPaletteKey =
+  | 'ground'
+  | 'ground2'
+  | 'surface'
+  | 'ink'
+  | 'inkDim'
+  | 'inkFaint'
+  | 'line'
+  | 'brand';
+
+export interface RailView {
+  tab: PanelTab;
+  theme: ThemeId;
+  side: 'left' | 'right';
+  running: number;
+  tone: RailTone;
+  status: string;
+  counts: Partial<Record<PanelTab, number>>;
+}
+
+export type RailCommand =
+  | { channel: typeof RAIL_CHANNEL; op: 'show'; view: RailView }
+  | { channel: typeof RAIL_CHANNEL; op: 'hide' };
+
+export type RailRequest =
+  | { channel: typeof RAIL_CHANNEL; op: 'open'; tab: PanelTab }
+  | { channel: typeof RAIL_CHANNEL; op: 'sync' };
+
+export function isRailCommand(message: unknown): message is RailCommand {
+  if (typeof message !== 'object' || message === null) return false;
+  const frame = message as { channel?: unknown; op?: unknown };
+  return frame.channel === RAIL_CHANNEL && (frame.op === 'show' || frame.op === 'hide');
+}
+
+export function isRailRequest(message: unknown): message is RailRequest {
+  if (typeof message !== 'object' || message === null) return false;
+  const frame = message as { channel?: unknown; op?: unknown };
+  return frame.channel === RAIL_CHANNEL && (frame.op === 'open' || frame.op === 'sync');
+}
+
+/** Lucide paths, copied so the content script carries no React and no icon package. */
+export const RAIL_TABS: { id: PanelTab; label: string; paths: string[] }[] = [
+  {
+    id: 'chat',
+    label: 'Chat',
+    paths: [
+      'M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z',
+      'M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1',
+    ],
+  },
+  {
+    id: 'history',
+    label: 'History',
+    paths: ['M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8', 'M3 3v5h5', 'M12 7v5l4 2'],
+  },
+  {
+    id: 'skills',
+    label: 'Skills',
+    paths: [
+      'M12 5v16',
+      'M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z',
+    ],
+  },
+  {
+    id: 'recordings',
+    label: 'Recordings',
+    paths: [
+      'm12.296 3.464 3.02 3.956',
+      'M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z',
+      'M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+      'm6.18 5.276 3.1 3.899',
+    ],
+  },
+  {
+    id: 'tasks',
+    label: 'Schedules',
+    paths: [
+      'M16 14v2.2l1.6 1',
+      'M16 2v4',
+      'M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5',
+      'M3 10h5',
+      'M8 2v4',
+      'M22 16a6 6 0 1 1-12 0 6 6 0 0 1 12 0',
+    ],
+  },
+];
+
+/** The panel's tokens, spelled out — a content script has no stylesheet to read them
+ *  from. One entry per block in globals.css; a new theme there needs one here. */
+export const RAIL_PALETTES: Record<ThemeId, Record<RailPaletteKey, string>> = {
+  ember: {
+    ground: 'oklch(0.152 0.016 52)',
+    ground2: 'oklch(0.183 0.018 50)',
+    surface: 'oklch(0.213 0.019 48)',
+    ink: 'oklch(0.958 0.012 70)',
+    inkDim: 'oklch(0.735 0.018 60)',
+    inkFaint: 'oklch(0.575 0.02 55)',
+    line: 'color-mix(in oklch, oklch(0.98 0.01 60) 12%, transparent)',
+    brand: 'oklch(0.83 0.13 195)',
+  },
+  midnight: {
+    ground: 'oklch(0.158 0.024 264)',
+    ground2: 'oklch(0.192 0.028 264)',
+    surface: 'oklch(0.228 0.032 264)',
+    ink: 'oklch(0.958 0.012 268)',
+    inkDim: 'oklch(0.742 0.022 266)',
+    inkFaint: 'oklch(0.585 0.026 265)',
+    line: 'color-mix(in oklch, oklch(0.97 0.02 268) 12%, transparent)',
+    brand: 'oklch(0.79 0.15 288)',
+  },
+  phosphor: {
+    ground: 'oklch(0.142 0.022 152)',
+    ground2: 'oklch(0.176 0.026 152)',
+    surface: 'oklch(0.208 0.03 150)',
+    ink: 'oklch(0.945 0.06 150)',
+    inkDim: 'oklch(0.755 0.075 150)',
+    inkFaint: 'oklch(0.6 0.062 150)',
+    line: 'color-mix(in oklch, oklch(0.92 0.1 150) 12%, transparent)',
+    brand: 'oklch(0.86 0.2 152)',
+  },
+  daylight: {
+    ground: 'oklch(0.988 0.004 88)',
+    ground2: 'oklch(0.968 0.006 84)',
+    surface: 'oklch(0.945 0.008 80)',
+    ink: 'oklch(0.265 0.018 58)',
+    inkDim: 'oklch(0.455 0.02 56)',
+    inkFaint: 'oklch(0.556 0.02 55)',
+    line: 'color-mix(in oklch, oklch(0.32 0.02 58) 12%, transparent)',
+    brand: 'oklch(0.514 0.12 214)',
+  },
+};
+
+export const RAIL_TONES: Record<ThemeId, Record<RailTone, string>> = {
+  ember: {
+    off: 'color-mix(in oklch, oklch(0.575 0.02 55) 50%, transparent)',
+    pending: 'oklch(0.84 0.15 85)',
+    live: 'oklch(0.84 0.18 150)',
+    busy: 'oklch(0.83 0.13 195)',
+    listening: 'oklch(0.7 0.21 335)',
+    warn: 'oklch(0.735 0.168 42)',
+  },
+  midnight: {
+    off: 'color-mix(in oklch, oklch(0.585 0.026 265) 50%, transparent)',
+    pending: 'oklch(0.86 0.14 82)',
+    live: 'oklch(0.85 0.17 165)',
+    busy: 'oklch(0.79 0.15 288)',
+    listening: 'oklch(0.72 0.2 330)',
+    warn: 'oklch(0.75 0.16 22)',
+  },
+  phosphor: {
+    off: 'color-mix(in oklch, oklch(0.6 0.062 150) 50%, transparent)',
+    pending: 'oklch(0.87 0.16 92)',
+    live: 'oklch(0.9 0.2 122)',
+    busy: 'oklch(0.86 0.2 152)',
+    listening: 'oklch(0.74 0.2 338)',
+    warn: 'oklch(0.79 0.16 48)',
+  },
+  daylight: {
+    off: 'color-mix(in oklch, oklch(0.556 0.02 55) 50%, transparent)',
+    pending: 'oklch(0.562 0.13 68)',
+    live: 'oklch(0.52 0.14 148)',
+    busy: 'oklch(0.514 0.12 214)',
+    listening: 'oklch(0.53 0.2 335)',
+    warn: 'oklch(0.552 0.17 40)',
+  },
+};
