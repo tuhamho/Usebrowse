@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Usebrowse</title><link rel="stylesheet" href="panel.css"></head>
+<body><header><div class="brand"><span class="orb">u</span><div><strong>usebrowse</strong><small>YOUR LOCAL BROWSER AGENT</small></div></div><span id="status" class="status">Connecting…</span></header>
+<main id="messages"><div class="welcome"><div class="big-orb">u</div><h1>Your browser,<br>with an extra brain.</h1><p>Ask me to find something, compare pages, or handle a repetitive task. I’ll ask before making changes.</p><div class="suggestions"><button>Summarize this page</button><button>Find the main action</button></div></div></main>
+<section id="approval" class="approval hidden"><div><strong>Approve browser action?</strong><p id="approvalText"></p></div><button id="deny" class="secondary">No</button><button id="approve">Allow</button></section>
+<form id="composer"><textarea id="prompt" rows="2" placeholder="Tell me what to do…" required></textarea><div class="composer-foot"><span>Local bridge · You approve page actions</span><button id="send" type="submit" aria-label="Send">↑</button></div></form>
+<details><summary>Pair this browser</summary><p>Start the local bridge, then paste its pairing code:</p><div class="pair-row"><input id="token" placeholder="Pairing code"><button id="pair">Connect</button></div></details>
+<script src="panel.js"></script></body></html>

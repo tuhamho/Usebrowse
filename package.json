@@ -1,0 +1,13 @@
+{
+  "name": "usebrowse",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Private local-first AI browser agent",
+  "scripts": {
+    "start": "node bridge/server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

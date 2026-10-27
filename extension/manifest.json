@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Usebrowse — AI Browser Agent",
+  "version": "0.1.0",
+  "description": "A local-first AI assistant for your browser.",
+  "permissions": ["storage", "tabs", "activeTab", "scripting", "sidePanel", "webNavigation"],
+  "host_permissions": ["http://127.0.0.1:18791/*", "http://localhost:18791/*", "<all_urls>"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "side_panel": { "default_path": "panel.html" },
+  "action": { "default_title": "Open Usebrowse" },
+  "content_scripts": [{ "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }]
+}
