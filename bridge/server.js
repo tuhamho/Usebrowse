@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+loadEnv(path.resolve(here, '..', '.env'));
 const port = Number(process.env.USEBROWSE_PORT || 18791);
 const baseUrl = (process.env.USEBROWSE_BASE_URL || 'http://127.0.0.1:11434/v1').replace(/\/$/, '');
 const model = process.env.USEBROWSE_MODEL || 'qwen2.5:7b';
@@ -153,3 +154,12 @@ server.listen(port, '127.0.0.1', () => {
 
 function json(res, status, value) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value)); }
 function readBody(req) { return new Promise((resolve, reject) => { let data = ''; req.on('data', (chunk) => { data += chunk; if (data.length > 16000) { reject(new Error('Request body too large.')); req.destroy(); } }); req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { reject(new Error('Invalid JSON.')); } }); req.on('error', reject); }); }
+function loadEnv(file) {
+  if (!fs.existsSync(file)) return;
+  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!match || match[1] in process.env) continue;
+    const value = match[2].replace(/^(['"])(.*)\1$/, '$2');
+    process.env[match[1]] = value;
+  }
+}
