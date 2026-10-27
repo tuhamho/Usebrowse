@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const REPO = 'imshaikot/browsentic';
+const REPO = 'tuhamho/Usebrowse';
 const ARCHITECTURES = { 'windows-x86_64': 'x64', 'windows-aarch64': 'arm64' } as const;
 
 const [version, signatures] = process.argv.slice(2);
@@ -16,7 +16,8 @@ if (!version || !signatures) {
   process.exit(1);
 }
 
-const installerName = (release: string, arch: string) => `Browsentic-${release}-${arch}-setup.exe`;
+const installerName = (release: string, arch: string) => `Tuhamho-Brow-${release}-${arch}-setup.exe`;
+const tag = `v${version}`;
 
 const platforms = Object.fromEntries(
   Object.entries(ARCHITECTURES).map(([platform, arch]) => {
@@ -25,7 +26,7 @@ const platforms = Object.fromEntries(
       platform,
       {
         signature: readFileSync(join(signatures, `${installer}.sig`), 'utf8').trim(),
-        url: `https://github.com/${REPO}/releases/download/v${version}/${installer}`,
+        url: `https://github.com/${REPO}/releases/download/${tag}/${installer}`,
       },
     ];
   }),
@@ -33,7 +34,7 @@ const platforms = Object.fromEntries(
 
 const feed = {
   version,
-  notes: `https://github.com/${REPO}/releases/tag/v${version}`,
+  notes: `https://github.com/${REPO}/releases/tag/${tag}`,
   pub_date: new Date().toISOString(),
   platforms,
 };

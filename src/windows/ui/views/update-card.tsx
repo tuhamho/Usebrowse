@@ -5,8 +5,8 @@ import { formatWhen } from '@/lib/format-when';
 import { Card, CopyButton, PrimaryButton, QuietButton, SectionTitle, Spinner } from '../components';
 import type { Model, State } from '../model';
 
-export const INSTALL_LINE = 'irm https://browsentic.com/install.ps1 | iex';
-const RELEASES = 'https://github.com/imshaikot/browsentic/releases/tag/v';
+export const INSTALL_LINE = 'https://github.com/tuhamho/Usebrowse/releases/latest';
+const RELEASES = 'https://github.com/tuhamho/Usebrowse/releases/tag/v';
 
 export function UpdateCard({ model, state }: { model: Model; state: State }) {
   const { update, updatePhase: phase, info } = state;
@@ -17,24 +17,24 @@ export function UpdateCard({ model, state }: { model: Model; state: State }) {
 
   const title =
     phase.kind === 'downloading'
-      ? `Downloading Browsentic ${update?.version ?? ''} · ${Math.round(phase.fraction * 100)}%`
+      ? `Downloading Tuhamho Brow ${update?.version ?? ''} · ${Math.round(phase.fraction * 100)}%`
       : phase.kind === 'relaunching'
         ? 'Reopening on the new version'
         : failed
           ? 'The update did not install'
           : update
-            ? `Browsentic ${update.version} is out`
-            : `Browsentic ${current} is up to date`;
+            ? `Tuhamho Brow ${update.version} is out`
+            : `Tuhamho Brow ${current} is up to date`;
 
   const subtitle =
     phase.kind === 'downloading'
-      ? 'Browsentic Bridge keeps running while this happens.'
+      ? 'Tuhamho Brow Bridge keeps running while this happens.'
       : phase.kind === 'relaunching'
-        ? 'The app closes for a moment, then replaces Browsentic Bridge.'
+        ? 'The app closes for a moment, then replaces Tuhamho Brow Bridge.'
         : failed
-          ? `${phase.reason} Nothing was changed. The PowerShell line installs the same release.`
+          ? `${phase.reason} Nothing was changed. Open the latest release page to install it manually.`
           : update
-            ? `You have ${current}. One press replaces the app, then Browsentic Bridge, and reopens it.`
+            ? `You have ${current}. One press replaces the app, then Tuhamho Brow Bridge, and reopens it.`
             : state.lastUpdateCheck
               ? `Checked GitHub ${formatWhen(state.lastUpdateCheck)}.`
               : 'Checks GitHub when it opens and every few hours after.';
@@ -59,7 +59,7 @@ export function UpdateCard({ model, state }: { model: Model; state: State }) {
               <Spinner />
             ) : failed ? (
               <>
-                <CopyButton value={INSTALL_LINE} label="Copy the PowerShell line" />
+                <CopyButton value={INSTALL_LINE} label="Copy release link" />
                 <PrimaryButton icon={RefreshCw} onClick={() => void model.installUpdate()}>
                   Try again
                 </PrimaryButton>

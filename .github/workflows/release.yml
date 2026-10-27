@@ -378,8 +378,10 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           bundle="src/windows/target/${{ matrix.target }}/release/bundle/nsis"
           mkdir -p dist/windows
-          cp "$bundle/Browsentic_${version}_${{ matrix.arch }}-setup.exe" "dist/windows/Browsentic-${version}-${{ matrix.arch }}-setup.exe"
-          cp "$bundle/Browsentic_${version}_${{ matrix.arch }}-setup.exe.sig" "dist/windows/Browsentic-${version}-${{ matrix.arch }}-setup.exe.sig"
+          installer=$(find "$bundle" -maxdepth 1 -type f -name "*_${version}_${{ matrix.arch }}-setup.exe" -print -quit)
+          test -n "$installer" || { echo "::error::Tauri NSIS installer not found in $bundle"; exit 1; }
+          cp "$installer" "dist/windows/Tuhamho-Brow-${version}-${{ matrix.arch }}-setup.exe"
+          cp "$installer.sig" "dist/windows/Tuhamho-Brow-${version}-${{ matrix.arch }}-setup.exe.sig"
 
       - name: Attach the installer to the release
         env:
@@ -400,7 +402,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "$GITHUB_REF_NAME" --pattern 'Browsentic-*-setup.exe.sig' --dir signatures
+          gh release download "$GITHUB_REF_NAME" --pattern 'Tuhamho-Brow-*-setup.exe.sig' --dir signatures
           node scripts/windows-latest-json.ts "${GITHUB_REF_NAME#v}" signatures > latest.json
           gh release upload "$GITHUB_REF_NAME" latest.json --clobber
 

@@ -55,7 +55,7 @@
       "desktop": { "schemes": ["browsentic"] }
     },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM0MDRFRkQ2RjcyMUUzNzEKUldSeDR5SDMxdThFTkkxZXVFa0Y1OVhpTTVaTGdIQmdXV0RpMXliclZnRi81QVJFVEl6dDkwSzUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ1RDA4NDRDOTc2QTg5RTcKUldUbmlXcVhUSVRRUlJiQ2hPNVNuWWNSMXc2NjZSai9VeU16WnAyQmdLZU5odkZiSmF2UHhmVlEK",
       "endpoints": ["https://github.com/tuhamho/Usebrowse/releases/latest/download/latest.json"],
       "windows": { "installMode": "passive" }
     }
