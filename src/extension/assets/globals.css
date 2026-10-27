@@ -23,30 +23,30 @@
 [data-theme='ember'] {
   color-scheme: dark;
 
-  --ground: oklch(0.132 0.026 258);
-  --ground-2: oklch(0.166 0.031 258);
-  --surface: oklch(0.202 0.034 257);
-  --surface-2: oklch(0.244 0.04 256);
+  --ground: oklch(0.115 0.025 258);
+  --ground-2: oklch(0.15 0.03 258);
+  --surface: oklch(0.19 0.035 257);
+  --surface-2: oklch(0.235 0.04 256);
 
   --ink: oklch(0.963 0.012 255);
-  --ink-dim: oklch(0.735 0.024 255);
-  --ink-faint: oklch(0.575 0.03 255);
+  --ink-dim: oklch(0.76 0.022 255);
+  --ink-faint: oklch(0.625 0.026 255);
 
-  --line: oklch(0.92 0.03 255 / 11%);
-  --line-strong: oklch(0.92 0.03 255 / 20%);
+  --line: oklch(0.92 0.03 255 / 13%);
+  --line-strong: oklch(0.92 0.03 255 / 23%);
 
-  --brand: oklch(0.76 0.16 244);
-  --brand-deep: oklch(0.58 0.17 247);
-  --ember: oklch(0.68 0.13 218);
-  --magenta: oklch(0.7 0.15 270);
+  --brand: oklch(0.72 0.16 252);
+  --brand-deep: oklch(0.57 0.17 255);
+  --ember: oklch(0.72 0.12 224);
+  --magenta: oklch(0.68 0.13 278);
   --lime: oklch(0.84 0.18 150);
   --amber: oklch(0.84 0.15 85);
   --danger: oklch(0.645 0.205 25);
 
   --wash: oklch(0.96 0.02 255);
-  --grain: 0.03;
-  --neon: 55%;
-  --glow: 72%;
+  --grain: 0.018;
+  --neon: 38%;
+  --glow: 52%;
 }
 
 /* Cool blue-black under a violet brand. */
@@ -239,6 +239,21 @@
     letter-spacing: -0.024em;
   }
 
+  button:not(:disabled),
+  a[href],
+  [role='button'] {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  :where(button, a[href], input, textarea, select, [tabindex]):focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 3px;
+  }
+
   /* The film grain the landing page wears, at a fraction of the strength. */
   body::after {
     content: "";
@@ -275,10 +290,11 @@
 @utility panel-card {
   background: linear-gradient(
     180deg,
-    color-mix(in oklch, var(--wash) 4.5%, transparent),
-    color-mix(in oklch, var(--wash) 1.5%, transparent)
+    color-mix(in oklch, var(--wash) 5.5%, transparent),
+    color-mix(in oklch, var(--wash) 2%, transparent)
   );
   border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 color-mix(in oklch, var(--wash) 5%, transparent), 0 18px 44px -36px rgb(0 0 0 / 80%);
 }
 
 /* Neon halo around text, taken from the element’s current color. */
@@ -341,7 +357,7 @@
 @utility home-halo {
   background: radial-gradient(
     ellipse 65% 60% at 50% 42%,
-    color-mix(in oklch, var(--brand) calc(var(--glow) * 0.13), transparent),
+    color-mix(in oklch, var(--brand) calc(var(--glow) * 0.09), transparent),
     transparent 72%
   );
 }

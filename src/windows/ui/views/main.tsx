@@ -24,9 +24,9 @@ export function MainView({ model, state }: { model: Model; state: State }) {
   const running = state.daemon === 'on';
   return (
     <div className="relative flex h-full min-w-0">
-      <aside className="relative z-10 flex w-[218px] shrink-0 flex-col border-r border-line bg-ground/90 px-3 py-5 backdrop-blur-xl">
-        <div className="mb-8 flex items-center gap-3 px-3">
-          <span className="flex size-10 items-center justify-center rounded-xl border border-brand/25 bg-brand/10">
+      <aside className="relative z-10 flex w-[230px] shrink-0 flex-col border-r border-line bg-gradient-to-b from-ground/95 via-ground/92 to-ground-2/90 px-3 py-5 backdrop-blur-xl">
+        <div className="mb-8 flex items-center gap-3 rounded-2xl border border-line bg-surface/45 px-3 py-3 shadow-[inset_0_1px_0_rgb(255_255_255/4%)]">
+          <span className="flex size-10 items-center justify-center rounded-xl border border-brand/30 bg-brand/12 shadow-[0_8px_22px_-14px_var(--brand)]">
             <Logo className="size-7 text-brand" />
           </span>
           <span className="min-w-0">
@@ -51,7 +51,7 @@ export function MainView({ model, state }: { model: Model; state: State }) {
                 onClick={() => model.setTab(tab)}
                 className={cn(
                   'group flex h-10 items-center gap-3 rounded-xl px-3 text-left text-[13px] font-medium transition-colors',
-                  selected ? 'bg-brand/12 text-brand shadow-[inset_2px_0_0_var(--brand)]' : 'text-ink-dim hover:bg-surface/70 hover:text-ink',
+                  selected ? 'bg-brand/12 text-brand shadow-[inset_2px_0_0_var(--brand),0_8px_24px_-20px_var(--brand)]' : 'text-ink-dim hover:bg-surface/70 hover:text-ink',
                 )}
               >
                 <Icon className="size-[17px] shrink-0" strokeWidth={2} />
@@ -64,7 +64,7 @@ export function MainView({ model, state }: { model: Model; state: State }) {
         </nav>
 
         <div className="mt-auto space-y-3 px-2">
-          <div className="rounded-xl border border-line bg-surface/55 p-3">
+          <div className="rounded-2xl border border-line bg-gradient-to-br from-surface/75 to-ground-2/70 p-3.5 shadow-[inset_0_1px_0_rgb(255_255_255/4%)]">
             <div className="flex items-center gap-2">
               <span className={cn('size-2 rounded-full', running ? 'bg-lime shadow-[0_0_10px_var(--lime)]' : state.daemon === 'starting' ? 'animate-pulse bg-amber' : 'bg-ink-faint')} />
               <span className="text-[11px] font-semibold text-ink">{t('Bridge', 'Bridge')} {running ? t('running', 'đang chạy') : state.daemon === 'off' ? t('offline', 'đang tắt') : state.daemon}</span>
@@ -81,7 +81,7 @@ export function MainView({ model, state }: { model: Model; state: State }) {
       </aside>
 
       <main className="relative z-10 flex min-w-0 flex-1 flex-col">
-        <header className="flex h-[72px] shrink-0 items-center justify-between border-b border-line bg-ground/55 px-7 backdrop-blur-xl">
+        <header className="flex h-[76px] shrink-0 items-center justify-between border-b border-line bg-ground/58 px-7 backdrop-blur-xl">
           <div>
             <p className="text-[9px] font-bold tracking-[0.16em] text-brand uppercase">Tuhamho Brow</p>
             <h1 className="mt-0.5 font-display text-[17px] font-semibold text-ink">{t(TAB[state.tab].label, ({ overview: 'Tổng quan', browsers: 'Trình duyệt', android: 'Android', settings: 'Cài đặt', about: 'Giới thiệu' } as const)[state.tab])}</h1>

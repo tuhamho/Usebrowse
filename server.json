@@ -4,20 +4,35 @@
   "title": "Browsentic",
   "description": "Agentic browser harness: your agent CLI in your real, signed-in browser, from a side panel or MCP.",
   "websiteUrl": "https://browsentic.com",
-  "icons": [{ "src": "https://browsentic.com/icon/128.png", "mimeType": "image/png", "sizes": ["128x128"] }],
+  "icons": [
+    {
+      "src": "https://browsentic.com/icon/128.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "128x128"
+      ]
+    }
+  ],
   "repository": {
     "url": "https://github.com/imshaikot/browsentic",
     "source": "github",
     "subfolder": "src/daemon"
   },
-  "version": "0.9.4",
+  "version": "0.9.5",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "browsentic",
-      "version": "0.9.4",
-      "transport": { "type": "stdio" },
-      "packageArguments": [{ "type": "positional", "value": "mcp" }]
+      "version": "0.9.5",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
     }
   ]
 }

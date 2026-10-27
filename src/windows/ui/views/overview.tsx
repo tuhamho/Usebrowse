@@ -38,8 +38,8 @@ export function OverviewView({ model, state }: { model: Model; state: State }) {
     <div className="space-y-4.5">
       {state.update && <UpdateCard model={model} state={state} />}
 
-      <Card className="p-6.5">
-        <div className="flex items-center gap-7">
+      <Card className="relative overflow-hidden p-6.5 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-brand/60 before:to-transparent">
+        <div className="relative flex items-center gap-6">
           <PowerOrb phase={daemon} onToggle={() => void model.setDaemon(daemon === 'off')} />
           <div className="min-w-0 flex-1 space-y-2">
             <div className="flex items-center gap-2">
@@ -112,7 +112,7 @@ function PowerOrb({ phase, onToggle }: { phase: DaemonPhase; onToggle: () => voi
       disabled={moving}
       title={on ? 'Turn Tuhamho Brow Bridge off' : 'Turn Tuhamho Brow Bridge on'}
       aria-label={on ? 'Turn Tuhamho Brow Bridge off' : 'Turn Tuhamho Brow Bridge on'}
-      className="relative size-[148px] shrink-0 rounded-full transition-transform duration-300 hover:scale-103"
+      className="relative size-[112px] shrink-0 rounded-full transition-transform duration-300 hover:scale-[1.03] focus-visible:outline-offset-4"
     >
       {on && <span className="breathe absolute inset-0 rounded-full bg-[radial-gradient(closest-side,color-mix(in_oklch,var(--brand)_calc(var(--glow)*0.55),transparent)_45%,transparent)]" />}
       <span
@@ -121,13 +121,13 @@ function PowerOrb({ phase, onToggle }: { phase: DaemonPhase; onToggle: () => voi
           background: moving
             ? 'conic-gradient(var(--brand) 0 35%, transparent 35%)'
             : on
-              ? 'conic-gradient(var(--brand), var(--ember), var(--magenta), var(--brand))'
+              ? 'conic-gradient(var(--brand), color-mix(in oklch, var(--brand) 55%, white), var(--brand-deep), var(--brand))'
               : 'var(--line-strong)',
         }}
       />
       <span className="absolute inset-6.5 rounded-full border border-line-strong bg-gradient-to-b from-surface-2 to-ground-2 shadow-[0_6px_10px_rgb(0_0_0/0.35)]" />
       <Power
-        className={cn('absolute top-1/2 left-1/2 size-8 -translate-x-1/2 -translate-y-1/2', on ? 'neon-text text-brand' : 'text-ink-faint')}
+        className={cn('absolute top-1/2 left-1/2 size-7 -translate-x-1/2 -translate-y-1/2', on ? 'text-brand' : 'text-ink-faint')}
         strokeWidth={3}
       />
     </button>

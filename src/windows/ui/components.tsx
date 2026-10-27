@@ -43,7 +43,7 @@ const DOT: Record<Tint, string> = {
 
 export function Card({ children, className, padded = true }: { children: ReactNode; className?: string; padded?: boolean }) {
   return (
-    <section className={cn('w-full rounded-2xl border border-line bg-surface/72 backdrop-blur-sm', padded && 'p-5', className)}>
+    <section className={cn('panel-card w-full rounded-2xl bg-surface/60 backdrop-blur-md', padded && 'p-5', className)}>
       {children}
     </section>
   );
@@ -83,8 +83,8 @@ export function PrimaryButton({ icon: Icon, tint = 'brand', className, children,
       type="button"
       {...props}
       className={cn(
-        'inline-flex shrink-0 items-center gap-2 rounded-full px-4 py-2.25 text-[13px] font-semibold transition active:scale-[0.97] disabled:opacity-40',
-        tint === 'danger' ? 'glow-destructive bg-destructive text-ink' : 'glow-brand bg-brand text-ground',
+        'inline-flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-semibold transition duration-200 active:scale-[0.98] disabled:opacity-40',
+        tint === 'danger' ? 'bg-destructive text-ink hover:brightness-110' : 'glow-brand bg-brand text-ground hover:brightness-110',
         className,
       )}
     >
@@ -100,7 +100,7 @@ export function QuietButton({ icon: Icon, tint, className, children, ...props }:
       type="button"
       {...props}
       className={cn(
-        'inline-flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface-2/70 px-3 py-1.75 text-xs font-medium transition hover:bg-surface-2 active:scale-[0.97] disabled:opacity-40',
+        'inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-line-strong/70 bg-surface/70 px-3 py-2 text-xs font-medium transition duration-200 hover:border-brand/30 hover:bg-surface-2 active:scale-[0.98] disabled:opacity-40',
         tint ? TEXT[tint] : 'text-ink',
         className,
       )}

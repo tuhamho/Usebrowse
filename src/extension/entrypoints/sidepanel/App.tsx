@@ -301,7 +301,7 @@ export default function App() {
 
   return (
     <div className={cn('relative flex h-screen flex-col', detaching && 'detaching')}>
-      <header className="flex shrink-0 items-center gap-2 px-3 py-2.5">
+      <header className="flex shrink-0 items-center gap-2 border-b border-line/70 bg-ground/45 px-3 py-2.5 backdrop-blur-xl">
         <Wordmark className="flex-1" />
         <StatusPill
           tone={status.tone}

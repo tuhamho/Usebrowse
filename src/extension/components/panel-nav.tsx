@@ -81,8 +81,8 @@ export function PanelNav({
             aria-label={label}
             aria-current={active ? 'page' : undefined}
             className={cn(
-              'relative inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-medium transition-colors',
-              active ? 'bg-brand/12 text-brand' : 'text-ink-faint hover:bg-surface/60 hover:text-ink-dim',
+              'relative inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl border px-3 py-1.5 text-[11px] font-medium transition-all duration-200',
+              active ? 'border-brand/20 bg-brand/12 text-brand shadow-[inset_0_1px_0_rgb(255_255_255/5%)]' : 'border-transparent text-ink-faint hover:bg-surface/60 hover:text-ink-dim',
             )}
           >
             <Icon className="size-3.5" />

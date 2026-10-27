@@ -169,7 +169,7 @@ export default function App({ onTurnOff }: { onTurnOff: () => void }) {
     <div className="relative flex min-h-screen flex-col overflow-x-clip">
       <div aria-hidden className="dot-grid fade-radial pointer-events-none fixed inset-0" />
 
-      <header className="relative z-20 flex items-center gap-2 px-5 py-4">
+      <header className="relative z-20 flex items-center gap-2 border-b border-line/60 bg-ground/35 px-5 py-3.5 backdrop-blur-xl">
         <Wordmark />
         <div className="ml-auto flex items-center gap-1">
           <div className="relative">
@@ -206,15 +206,19 @@ export default function App({ onTurnOff }: { onTurnOff: () => void }) {
         </div>
       </header>
 
-      <main className="relative z-10 mx-auto flex w-full max-w-[44rem] flex-1 flex-col px-5 pt-[9vh] pb-16">
+      <main className="relative z-10 mx-auto flex w-full max-w-[48rem] flex-1 flex-col px-5 pt-[7vh] pb-16">
         <div className="flex flex-col items-center text-center">
-          <Logo drawn className="size-11 text-brand" />
-          <h1 className="mt-4 font-display text-[2rem] leading-tight font-semibold tracking-tight text-ink sm:text-[2.5rem]">
+          <span className="rounded-[20px] border border-brand/20 bg-surface/65 p-1.5 shadow-[0_14px_36px_-24px_var(--brand)]">
+            <Logo drawn className="size-10 text-brand" />
+          </span>
+          <p className="mt-5 font-mono text-[10px] font-semibold tracking-[0.22em] text-brand uppercase">Tuhamho Brow · Local agent</p>
+          <h1 className="mt-2 font-display text-[2rem] leading-tight font-semibold tracking-tight text-ink sm:text-[2.5rem]">
             {hello}
           </h1>
+          <p className="mt-2 max-w-[30rem] text-sm leading-relaxed text-ink-dim">Your browser is ready. Tell Tuhamho Brow what to do, or choose a starting point below.</p>
         </div>
 
-        <div className="relative mt-8">
+        <div className="relative mt-7">
           <div aria-hidden className="home-halo pointer-events-none absolute -inset-x-24 -inset-y-16" />
           <div className="relative">
             <Composer
@@ -284,7 +288,7 @@ export default function App({ onTurnOff }: { onTurnOff: () => void }) {
                   <button
                     type="button"
                     onClick={() => use(text)}
-                    className="rounded-full border border-line bg-ground-2/60 px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-brand/40 hover:text-ink"
+                    className="rounded-full border border-line bg-surface/45 px-3.5 py-2 text-xs text-ink-dim shadow-[inset_0_1px_0_rgb(255_255_255/3%)] transition-all duration-200 hover:-translate-y-0.5 hover:border-brand/35 hover:bg-brand/8 hover:text-ink"
                   >
                     {text}
                   </button>
