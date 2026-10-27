@@ -29,7 +29,7 @@ export default function App() {
         <header className="flex items-start gap-3">
           <Logo className="mt-1 size-9 shrink-0 text-brand" />
           <div className="space-y-1">
-            <h1 className="text-xl font-semibold">Browsentic is in your browser</h1>
+            <h1 className="text-xl font-semibold">tuhamho-brow is in your browser</h1>
             <p className="text-sm leading-relaxed text-ink-dim">
               Your browser’s superpower: free, open source, and no API key, subscription or account. It runs on the agent
               CLI you already use, through Browsentic Bridge on this computer.
@@ -52,7 +52,7 @@ export default function App() {
             {hasSidePanel() ? (
               <p className="text-sm text-ink">You’re set. Open the side panel and tell it what to do on any page.</p>
             ) : (
-              <p className="text-sm text-ink">You’re set. Click Browsentic in the toolbar and tell it what to do on any page.</p>
+              <p className="text-sm text-ink">You’re set. Click tuhamho-brow in the toolbar and tell it what to do on any page.</p>
             )}
             <div className="flex flex-wrap items-center gap-3">
               {hasSidePanel() && (
@@ -61,7 +61,7 @@ export default function App() {
                 </Button>
               )}
               <span className="inline-flex items-center gap-1.5 text-xs text-ink-faint">
-                <Pin className="size-3.5" /> Pin Browsentic from the puzzle piece in the toolbar to keep it one click away.
+                <Pin className="size-3.5" /> Pin tuhamho-brow from the puzzle piece in the toolbar to keep it one click away.
               </span>
             </div>
           </section>

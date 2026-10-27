@@ -22,8 +22,8 @@ export default defineConfig({
     plugins: [tailwindcss()],
   }),
   manifest: ({ browser }) => ({
-    name: 'Browsentic',
-    description: 'Reimagine browsing as agentic — driven by the AI agent you already run, in your own logged-in browser.',
+    name: 'tuhamho-brow',
+    description: 'Your local AI browser agent, powered by the CLI you already use.',
     permissions: [
       'storage', 'unlimitedStorage', 'activeTab', 'contextMenus', 'alarms', 'scripting',
       'notifications', 'downloads', 'nativeMessaging',
@@ -37,7 +37,7 @@ export default defineConfig({
     ...(browser === 'firefox' && { optional_permissions: ['topSites'] }),
     host_permissions: ['<all_urls>'],
     // WXT writes the toolbar key only for a popup entrypoint, and the toolbar button opens the side panel instead.
-    action: { default_title: 'Browsentic' },
+    action: { default_title: 'tuhamho-brow' },
     commands: manifestCommands(browser === 'firefox'),
     // Release Firefox installs only what addons.mozilla.org has signed, and signing needs a
     // permanent id. The update URL is polled daily; the release job publishes updates.json
