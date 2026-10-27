@@ -1,6 +1,7 @@
 import { AlignLeft, BookOpen, ShieldCheck, SlidersHorizontal, Sparkles, type LucideIcon } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { useLanguage } from '../language';
 import { SETTINGS_SECTIONS, type Model, type SettingsSection, type State } from '../model';
 import { ActivityView } from './activity';
 import { AgentsView } from './agents';
@@ -18,12 +19,14 @@ const SECTION: Record<SettingsSection, { label: string; icon: LucideIcon; view: 
 
 /** Settings, with the pages that once had tabs of their own, picked from a sidebar that stays put while a page scrolls. */
 export function SettingsScreen({ model, state }: { model: Model; state: State }) {
+  const { t } = useLanguage();
   const View = SECTION[state.settingsSection].view;
   return (
     <div className="flex items-start gap-7">
       <nav aria-label="Settings sections" className="sticky top-16 flex w-42 shrink-0 flex-col gap-0.5">
         {SETTINGS_SECTIONS.map((section) => {
-          const { label, icon: Icon } = SECTION[section];
+          const { icon: Icon } = SECTION[section];
+          const label = t(SECTION[section].label, ({ general: 'Chung', agents: 'Agent', skills: 'Kỹ năng', activity: 'Hoạt động', logs: 'Nhật ký' } as const)[section]);
           const active = state.settingsSection === section;
           return (
             <button

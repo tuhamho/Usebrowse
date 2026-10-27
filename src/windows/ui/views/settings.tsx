@@ -6,12 +6,14 @@ import { ThemePicker } from '@/extension/components/theme-picker';
 import { Switch } from '@/extension/components/ui/switch';
 import { DEFAULT_THEME } from '@/lib/settings/theme';
 import { cn } from '@/lib/utils';
+import { useLanguage } from '../language';
 import { Card, ConfirmDialog, CopyButton, OfflineHint, PathRow, PrimaryButton, QuietButton, SectionTitle, Segmented, Spinner } from '../components';
 import { short, type Appearance, type Model, type State } from '../model';
 import type { PairingMode } from '../backend';
 import { UpdateCard } from './update-card';
 
 export function SettingsView({ model, state }: { model: Model; state: State }) {
+  const { t } = useLanguage();
   const [confirming, setConfirming] = useState(false);
   const [keepSkills, setKeepSkills] = useState(true);
   const info = state.info;
@@ -24,20 +26,20 @@ export function SettingsView({ model, state }: { model: Model; state: State }) {
 
       <Card>
         <div className="space-y-3.5">
-          <SectionTitle title="Appearance" />
+          <SectionTitle title={t('Appearance', 'Giao diện')} />
           <Segmented<Appearance>
             options={[
-              { value: 'system', label: 'System' },
-              { value: 'light', label: 'Light' },
-              { value: 'dark', label: 'Dark' },
+              { value: 'system', label: t('System', 'Theo hệ thống') },
+              { value: 'light', label: t('Light', 'Sáng') },
+              { value: 'dark', label: t('Dark', 'Tối') },
             ]}
             value={state.appearance}
             onSelect={(appearance) => model.setAppearance(appearance)}
           />
           <div className="border-t border-line" />
           <SwitchRow
-            title="Turn Browsentic Bridge on when the app opens"
-            subtitle="It keeps running after the window closes, so the side panel and MCP clients still work."
+            title={t('Turn Browsentic Bridge on when the app opens', 'Tự bật Bridge khi mở ứng dụng')}
+            subtitle={t('It keeps running after the window closes, so the side panel and MCP clients still work.', 'Bridge tiếp tục chạy sau khi đóng cửa sổ để bảng bên và MCP vẫn hoạt động.')}
             checked={state.startDaemonOnLaunch}
             onChange={(on) => model.setStartDaemonOnLaunch(on)}
           />
@@ -51,11 +53,11 @@ export function SettingsView({ model, state }: { model: Model; state: State }) {
       <Card>
         <div className="space-y-3">
           <SwitchRow
-            title="“browsentic” in your terminal"
+            title={t('“browsentic” in your terminal', 'Dùng lệnh “browsentic” trong Terminal')}
             subtitle={
               link?.linkedIn
                 ? `On your PATH, in ${short(link.linkedIn, info)}. Everything this window does, the command does too. Terminals opened from now on have it.`
-                : 'Adds its folder to your user PATH. No administrator, and only terminals opened afterwards see it.'
+                : t('Adds its folder to your user PATH. No administrator, and only terminals opened afterwards see it.', 'Thêm thư mục lệnh vào PATH của bạn. Không cần quyền quản trị; chỉ Terminal mở sau đó mới nhận lệnh.')
             }
             checked={!!link?.linkedIn}
             onChange={(on) => void model.setCommandLink(on)}
@@ -73,8 +75,8 @@ export function SettingsView({ model, state }: { model: Model; state: State }) {
       <Card>
         <div className="space-y-3">
           <SectionTitle
-            title="Optional: use it from an MCP client"
-            subtitle="The same browser tools, handed to Claude Code or any other MCP client. The side panel does not need this."
+            title={t('Optional: use it from an MCP client', 'Tùy chọn: dùng với MCP client')}
+            subtitle={t('The same browser tools, handed to Claude Code or any other MCP client. The side panel does not need this.', 'Cung cấp các công cụ trình duyệt cho Claude Code hoặc MCP client khác. Bảng bên không cần mục này.')}
           />
           <div className="flex items-center gap-2 rounded-[10px] border border-line bg-ground-2 py-1.5 pr-1.5 pl-3">
             <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink select-text">{mcpCommand}</span>
@@ -82,10 +84,10 @@ export function SettingsView({ model, state }: { model: Model; state: State }) {
           </div>
           {state.lock && (
             <div className="flex items-center gap-2">
-              <span className="text-xs text-ink-dim">Control token</span>
+              <span className="text-xs text-ink-dim">{t('Control token', 'Mã điều khiển')}</span>
               <span className="font-mono text-[11px] text-ink-faint">{'•'.repeat(24)}</span>
               <div className="flex-1" />
-              <CopyButton value={state.lock.token} label="Copy token" />
+              <CopyButton value={state.lock.token} label={t('Copy token', 'Sao chép mã')} />
             </div>
           )}
         </div>
@@ -95,23 +97,23 @@ export function SettingsView({ model, state }: { model: Model; state: State }) {
         <div className="flex items-center gap-4">
           <div className="min-w-0 flex-1">
             <SectionTitle
-              title="Uninstall"
-              subtitle="Stops Browsentic Bridge, unpairs every browser, and removes the command, the unpacked extension, keys, approvals and logs."
+              title={t('Uninstall', 'Gỡ cài đặt')}
+              subtitle={t('Stops Browsentic Bridge, unpairs every browser, and removes the command, the unpacked extension, keys, approvals and logs.', 'Dừng Bridge, hủy ghép nối mọi trình duyệt và xóa lệnh, extension, khóa, quyền truy cập và nhật ký.')}
             />
           </div>
           <QuietButton tint="danger" onClick={() => setConfirming(true)}>
-            Uninstall…
+            {t('Uninstall…', 'Gỡ cài đặt…')}
           </QuietButton>
         </div>
       </Card>
 
       {confirming && (
         <ConfirmDialog
-          title="Uninstall Browsentic?"
+          title={t('Uninstall Tuhamho Brow?', 'Gỡ Tuhamho Brow?')}
           message={
             'This stops Browsentic Bridge, unpairs every browser, and removes %USERPROFILE%\\.browsentic and %USERPROFILE%\\browsentic: the command, the unpacked extension, keys, approvals and logs.\n\nRemove Browsentic from each browser first: right-click its toolbar icon and choose Remove. Afterwards, uninstall the app itself in Settings › Apps › Installed apps.'
           }
-          action="Uninstall"
+          action={t('Uninstall', 'Gỡ cài đặt')}
           onCancel={() => setConfirming(false)}
           onConfirm={() => {
             setConfirming(false);
@@ -120,7 +122,7 @@ export function SettingsView({ model, state }: { model: Model; state: State }) {
         >
           <label className="flex items-center gap-2 text-[12.5px] text-ink">
             <input type="checkbox" checked={keepSkills} onChange={(event) => setKeepSkills(event.target.checked)} className="accent-[var(--brand)]" />
-            Keep my skills and site maps
+            {t('Keep my skills and site maps', 'Giữ lại kỹ năng và sơ đồ trang web')}
           </label>
         </ConfirmDialog>
       )}
@@ -147,11 +149,12 @@ const PAIRING: { mode: PairingMode; title: string; detail: string }[] = [
 
 /** How a browser with the extension gets in, kept by Browsentic Bridge in config.json; `browsentic pairing` changes the same setting. */
 function PairingSettings({ model, state }: { model: Model; state: State }) {
+  const { t } = useLanguage();
   if (state.daemon !== 'on') return null;
   return (
     <Card>
       <div className="space-y-3.5">
-        <SectionTitle title="Pairing" subtitle="How a browser with the extension connects to Browsentic Bridge. Browsers already paired stay paired." />
+        <SectionTitle title={t('Pairing', 'Ghép nối')} subtitle={t('How a browser with the extension connects to Browsentic Bridge. Browsers already paired stay paired.', 'Cách trình duyệt có extension kết nối với Bridge. Các trình duyệt đã ghép nối vẫn được giữ nguyên.')} />
         {state.pairingMode ? (
           <div role="radiogroup" aria-label="Pairing" className="grid grid-cols-3 gap-2">
             {PAIRING.map(({ mode, title, detail }) => {
@@ -169,8 +172,12 @@ function PairingSettings({ model, state }: { model: Model; state: State }) {
                     chosen ? 'border-brand/50 bg-brand/10' : 'border-line bg-ground-2 hover:border-line-strong',
                   )}
                 >
-                  <span className={cn('block text-[13px] font-semibold', chosen ? 'text-brand' : 'text-ink')}>{title}</span>
-                  <span className="block text-[11.5px] leading-snug text-ink-dim">{detail}</span>
+                  <span className={cn('block text-[13px] font-semibold', chosen ? 'text-brand' : 'text-ink')}>{t(title, ({ Automatic: 'Tự động', 'Ask me': 'Hỏi trước', 'Code only': 'Chỉ dùng mã' } as const)[title] ?? title)}</span>
+                  <span className="block text-[11.5px] leading-snug text-ink-dim">{t(detail, ({
+                    'A browser with Browsentic connects by itself.': 'Trình duyệt có Tuhamho Brow sẽ tự kết nối.',
+                    'You allow each new browser here first.': 'Bạn cần cho phép từng trình duyệt mới tại đây.',
+                    'A browser connects only with a code you type into it.': 'Trình duyệt chỉ kết nối khi bạn nhập mã ghép nối.',
+                  } as const)[detail] ?? detail)}</span>
                 </button>
               );
             })}
@@ -180,7 +187,7 @@ function PairingSettings({ model, state }: { model: Model; state: State }) {
             <p className="min-w-0 flex-1 text-xs text-ink-dim">
               This Browsentic Bridge started before browsers could connect by themselves, so it pairs only with a code. Restart it to choose.
             </p>
-            <PrimaryButton onClick={() => void model.restartDaemon()}>Restart it</PrimaryButton>
+            <PrimaryButton onClick={() => void model.restartDaemon()}>{t('Restart it', 'Khởi động lại')}</PrimaryButton>
           </div>
         )}
       </div>
@@ -190,6 +197,7 @@ function PairingSettings({ model, state }: { model: Model; state: State }) {
 
 /** The settings every paired browser shares, kept by the daemon in config.json. The extension's own settings page edits the same values. */
 function BrowserSettings({ model, state }: { model: Model; state: State }) {
+  const { t } = useLanguage();
   if (state.daemon !== 'on') return <OfflineHint what="The browser theme and the guardrails" model={model} daemonOff={state.daemon === 'off'} />;
   if (state.preferencesUnsupported) {
     return (
@@ -198,11 +206,11 @@ function BrowserSettings({ model, state }: { model: Model; state: State }) {
           <RefreshCw className="size-5 shrink-0 text-amber" strokeWidth={2.5} />
           <div className="min-w-0 flex-1">
             <SectionTitle
-              title="Browsentic Bridge predates this app"
-              subtitle="It is still running from before the last update, so it cannot share the browser theme or the guardrails yet."
+              title={t('Browsentic Bridge predates this app', 'Bridge cần được cập nhật')}
+              subtitle={t('It is still running from before the last update, so it cannot share the browser theme or the guardrails yet.', 'Bridge đang chạy phiên bản cũ nên chưa đồng bộ được giao diện trình duyệt và quy tắc an toàn.')}
             />
           </div>
-          <PrimaryButton onClick={() => void model.restartDaemon()}>Restart it</PrimaryButton>
+          <PrimaryButton onClick={() => void model.restartDaemon()}>{t('Restart it', 'Khởi động lại')}</PrimaryButton>
         </div>
       </Card>
     );
@@ -224,8 +232,8 @@ function BrowserSettings({ model, state }: { model: Model; state: State }) {
       <Card>
         <div className="space-y-3.5">
           <SectionTitle
-            title="Browser theme"
-            subtitle="How the side panel and the extension’s settings page look in every paired browser. This window keeps its own appearance."
+            title={t('Browser theme', 'Giao diện trình duyệt')}
+            subtitle={t('How the side panel and the extension’s settings page look in every paired browser. This window keeps its own appearance.', 'Giao diện bảng bên và trang cài đặt extension trên các trình duyệt đã ghép nối. Cửa sổ ứng dụng có giao diện riêng.')}
           />
           <ThemePicker theme={preferences.theme ?? DEFAULT_THEME} onSelect={(theme) => void model.setBrowserTheme(theme)} />
         </div>
@@ -233,8 +241,8 @@ function BrowserSettings({ model, state }: { model: Model; state: State }) {
       <Card>
         <div className="space-y-4">
           <SectionTitle
-            title="Guardrails"
-            subtitle="What the agent may do without asking you first. A run takes its policy when it starts, and every paired browser follows the same rules."
+            title={t('Guardrails', 'Quy tắc an toàn')}
+            subtitle={t('What the agent may do without asking you first. A run takes its policy when it starts, and every paired browser follows the same rules.', 'Các thao tác agent được phép thực hiện mà không cần hỏi. Quy tắc áp dụng từ lúc bắt đầu và dùng chung cho mọi trình duyệt.')}
           />
           <GuardrailPolicy
             settings={preferences.guardrails}

@@ -1,6 +1,8 @@
-import { Globe, Info, Power, Settings, Smartphone, type LucideIcon } from 'lucide-react';
+import { CircleHelp, Cpu, Globe, Info, Languages, Power, Settings, ShieldCheck, Smartphone, type LucideIcon } from 'lucide-react';
 
+import { Logo } from '@/extension/components/brand';
 import { cn } from '@/lib/utils';
+import { useLanguage } from '../language';
 import { TABS, type Model, type State, type Tab } from '../model';
 import { AboutView } from './about';
 import { AndroidView } from './android';
@@ -11,60 +13,91 @@ import { SettingsScreen } from './settings-screen';
 const TAB: Record<Tab, { label: string; icon: LucideIcon; view: typeof OverviewView; badge?: string }> = {
   overview: { label: 'Overview', icon: Power, view: OverviewView },
   browsers: { label: 'Browsers', icon: Globe, view: BrowsersView },
-  android: { label: 'Android', icon: Smartphone, view: AndroidView, badge: 'Experimental' },
+  android: { label: 'Android', icon: Smartphone, view: AndroidView, badge: 'Beta' },
   settings: { label: 'Settings', icon: Settings, view: SettingsScreen },
   about: { label: 'About', icon: Info, view: AboutView },
 };
 
 export function MainView({ model, state }: { model: Model; state: State }) {
+  const { language, setLanguage, t } = useLanguage();
   const View = TAB[state.tab].view;
+  const running = state.daemon === 'on';
   return (
-    <div className="relative h-full">
-      <div className="h-full overflow-y-auto [scrollbar-width:none]">
-        <div key={state.tab} className={cn('enter mx-auto px-7 pt-16 pb-9', state.tab === 'settings' ? 'max-w-[1076px]' : 'max-w-[880px]')}>
-          <View model={model} state={state} />
+    <div className="relative flex h-full min-w-0">
+      <aside className="relative z-10 flex w-[218px] shrink-0 flex-col border-r border-line bg-ground/90 px-3 py-5 backdrop-blur-xl">
+        <div className="mb-8 flex items-center gap-3 px-3">
+          <span className="flex size-10 items-center justify-center rounded-xl border border-brand/25 bg-brand/10">
+            <Logo className="size-7 text-brand" />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate font-display text-[15px] font-bold tracking-tight text-ink">Tuhamho Brow</span>
+            <span className="mt-1 block text-[9px] font-semibold tracking-[0.16em] text-ink-faint uppercase">{t('Local browser agent', 'Trợ lý trình duyệt cục bộ')}</span>
+          </span>
         </div>
-      </div>
-      <TabCapsule model={model} state={state} />
-    </div>
-  );
-}
 
-/** The view switcher floats at the top centre, Ctrl+1…Ctrl+5. */
-function TabCapsule({ model, state }: { model: Model; state: State }) {
-  return (
-    <nav className="absolute top-1.5 left-1/2 flex -translate-x-1/2 gap-0.5 rounded-full border border-line bg-surface/80 p-1 shadow-[0_6px_18px_rgb(0_0_0/0.25)] backdrop-blur-md">
-      {TABS.map((tab, index) => {
-        const { label, icon: Icon, badge } = TAB[tab];
-        const selected = state.tab === tab;
-        return (
-          <button
-            key={tab}
-            type="button"
-            title={`${label} (Ctrl+${index + 1})`}
-            aria-current={selected ? 'page' : undefined}
-            onClick={() => model.setTab(tab)}
-            className={cn(
-              'flex items-center gap-1.5 rounded-full px-3 py-1.75 text-xs font-medium transition-colors',
-              selected ? 'bg-brand text-ground' : 'text-ink-dim hover:text-ink',
-            )}
-          >
-            <Icon className="size-3" strokeWidth={2.5} />
-            {label}
-            {badge && (
-              <span
+        <p className="px-3 pb-2 text-[9px] font-bold tracking-[0.16em] text-ink-faint uppercase">{t('Workspace', 'Không gian làm việc')}</p>
+        <nav aria-label="Main navigation" className="flex flex-col gap-1">
+          {TABS.map((tab, index) => {
+            const { icon: Icon } = TAB[tab];
+            const label = t(TAB[tab].label, ({ overview: 'Tổng quan', browsers: 'Trình duyệt', android: 'Android', settings: 'Cài đặt', about: 'Giới thiệu' } as const)[tab]);
+            const badge = TAB[tab].badge ? t('Beta', 'Thử nghiệm') : undefined;
+            const selected = state.tab === tab;
+            return (
+              <button
+                key={tab}
+                type="button"
+                title={`${label} (Ctrl+${index + 1})`}
+                aria-current={selected ? 'page' : undefined}
+                onClick={() => model.setTab(tab)}
                 className={cn(
-                  'rounded-sm border px-1 font-mono text-[9px] tracking-wider uppercase',
-                  selected ? 'border-ground/50 text-ground' : 'border-amber/50 text-amber',
+                  'group flex h-10 items-center gap-3 rounded-xl px-3 text-left text-[13px] font-medium transition-colors',
+                  selected ? 'bg-brand/12 text-brand shadow-[inset_2px_0_0_var(--brand)]' : 'text-ink-dim hover:bg-surface/70 hover:text-ink',
                 )}
               >
-                {badge}
-              </span>
-            )}
-            {tab === 'overview' && state.update && <span className={cn('size-1.5 rounded-full', selected ? 'bg-ground' : 'bg-brand')} />}
+                <Icon className="size-[17px] shrink-0" strokeWidth={2} />
+                <span className="flex-1">{label}</span>
+                {badge && <span className="rounded-md border border-amber/30 px-1.5 py-0.5 text-[8px] font-bold tracking-wide text-amber uppercase">{badge}</span>}
+                {tab === 'overview' && state.update && <span className="size-1.5 rounded-full bg-brand" />}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="mt-auto space-y-3 px-2">
+          <div className="rounded-xl border border-line bg-surface/55 p-3">
+            <div className="flex items-center gap-2">
+              <span className={cn('size-2 rounded-full', running ? 'bg-lime shadow-[0_0_10px_var(--lime)]' : state.daemon === 'starting' ? 'animate-pulse bg-amber' : 'bg-ink-faint')} />
+              <span className="text-[11px] font-semibold text-ink">{t('Bridge', 'Bridge')} {running ? t('running', 'đang chạy') : state.daemon === 'off' ? t('offline', 'đang tắt') : state.daemon}</span>
+            </div>
+            <p className="mt-2 flex items-center gap-1.5 font-mono text-[10px] text-ink-faint">
+              <Cpu className="size-3" /> {state.status ? `127.0.0.1:${state.status.port}` : 'Local connection'}
+            </p>
+          </div>
+          <button type="button" onClick={() => setLanguage(language === 'en' ? 'vi' : 'en')} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-[11px] font-medium text-ink-dim transition hover:bg-surface/70 hover:text-ink">
+            <Languages className="size-3.5" /> {language === 'en' ? 'Tiếng Việt' : 'English'}
           </button>
-        );
-      })}
-    </nav>
+          <p className="flex items-center gap-1.5 px-1 text-[10px] text-ink-faint"><ShieldCheck className="size-3" /> {t('Runs on this computer', 'Chạy trên máy tính này')}</p>
+        </div>
+      </aside>
+
+      <main className="relative z-10 flex min-w-0 flex-1 flex-col">
+        <header className="flex h-[72px] shrink-0 items-center justify-between border-b border-line bg-ground/55 px-7 backdrop-blur-xl">
+          <div>
+            <p className="text-[9px] font-bold tracking-[0.16em] text-brand uppercase">Tuhamho Brow</p>
+            <h1 className="mt-0.5 font-display text-[17px] font-semibold text-ink">{t(TAB[state.tab].label, ({ overview: 'Tổng quan', browsers: 'Trình duyệt', android: 'Android', settings: 'Cài đặt', about: 'Giới thiệu' } as const)[state.tab])}</h1>
+          </div>
+          <div className="flex items-center gap-2 rounded-full border border-line bg-surface/60 px-3 py-1.5">
+            <span className={cn('size-1.5 rounded-full', running ? 'bg-lime' : 'bg-ink-faint')} />
+            <span className="text-[10px] font-medium text-ink-dim">{running ? t('All systems local', 'Mọi dịch vụ đang chạy cục bộ') : t('Bridge offline', 'Bridge đang tắt')}</span>
+          </div>
+        </header>
+        <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-width:thin] [scrollbar-color:var(--line-strong)_transparent]">
+          <div key={state.tab} className={cn('enter mx-auto w-full px-7 py-7', state.tab === 'settings' ? 'max-w-[1080px]' : 'max-w-[960px]')}>
+            <View model={model} state={state} />
+            <div className="mt-8 flex items-center justify-center gap-1.5 text-[10px] text-ink-faint"><CircleHelp className="size-3" /> {t('Tuhamho Brow · local-first browser automation', 'Tuhamho Brow · tự động hóa trình duyệt ngay trên máy')}</div>
+          </div>
+        </div>
+      </main>
+    </div>
   );
 }

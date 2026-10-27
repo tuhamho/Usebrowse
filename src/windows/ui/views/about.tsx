@@ -1,6 +1,7 @@
 import { BookOpen, Bug, ExternalLink, LifeBuoy, Lightbulb, MonitorCog, RotateCcw, ScrollText, Star, type LucideIcon } from 'lucide-react';
 
 import { Logo } from '@/extension/components/brand';
+import { useLanguage } from '../language';
 import { AUTHOR, LINKS, STAR_ASK, bugReportUrl, describeAgent, describeVersions, type VersionRow } from '@/lib/about';
 import { Card, CopyButton, PrimaryButton, QuietButton, SectionTitle } from '../components';
 import type { Model, State } from '../model';
@@ -27,6 +28,7 @@ export function versionsOf(state: State): VersionRow[] {
 }
 
 export function AboutView({ model, state }: { model: Model; state: State }) {
+  const { t } = useLanguage();
   const versions = versionsOf(state);
   const environment = describeVersions(versions);
   const open = (url: string) => () => void model.openUrl(url);
@@ -37,13 +39,13 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
         <div className="flex items-center gap-4">
           <Logo className="size-12 shrink-0 text-brand" />
           <div className="min-w-0 flex-1">
-            <SectionTitle title="Tuhamho Brow" subtitle={`${state.info?.version ?? ''} · your browser’s superpower · free and open source, Apache 2.0.`} />
+            <SectionTitle title="Tuhamho Brow" subtitle={`${state.info?.version ?? ''} · ${t('your browser’s superpower · free and open source, Apache 2.0.', 'tự động hóa trình duyệt · mã nguồn mở theo Apache 2.0.')}`} />
           </div>
           <QuietButton icon={ExternalLink} onClick={open(LINKS.site)}>
-            GitHub
+            {t('GitHub', 'GitHub')}
           </QuietButton>
           <QuietButton icon={ExternalLink} onClick={open(LINKS.repository)}>
-            Source
+            {t('Source', 'Mã nguồn')}
           </QuietButton>
         </div>
       </Card>
@@ -52,20 +54,20 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
         <div className="space-y-4">
           <div className="flex items-center gap-4">
             <div className="min-w-0 flex-1">
-              <SectionTitle title={`Made by ${AUTHOR}`} subtitle="Builds and maintains Tuhamho Brow." />
+              <SectionTitle title={`${t('Made by', 'Tác giả')} ${AUTHOR}`} subtitle={t('Builds and maintains Tuhamho Brow.', 'Phát triển và duy trì Tuhamho Brow.')} />
             </div>
             <QuietButton icon={ExternalLink} onClick={open(LINKS.author)}>
-              GitHub profile
+              {t('GitHub profile', 'Trang GitHub')}
             </QuietButton>
           </div>
           <div className="border-t border-line" />
           <div className="flex items-center gap-4">
             <Star className="size-5 shrink-0 text-amber" strokeWidth={2.5} />
             <div className="min-w-0 flex-1">
-              <SectionTitle title="Star it on GitHub" subtitle={STAR_ASK} />
+            <SectionTitle title={t('Star it on GitHub', 'Ủng hộ dự án trên GitHub')} subtitle={t(STAR_ASK, 'Tuhamho Brow là phần mềm mã nguồn mở miễn phí. Hãy đánh dấu sao trên GitHub để theo dõi dự án.')} />
             </div>
             <PrimaryButton icon={Star} onClick={open(LINKS.repository)}>
-              Star
+              {t('Star', 'Đánh dấu sao')}
             </PrimaryButton>
           </div>
         </div>
@@ -74,8 +76,8 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
       <Card>
         <div className="space-y-3.5">
           <SectionTitle
-            title="Versions"
-            subtitle="What this computer is running. Report a bug opens GitHub’s issue form with these filled in; nothing is sent until you submit it there."
+            title={t('Versions', 'Phiên bản')}
+            subtitle={t('What this computer is running. Report a bug opens GitHub’s issue form with these filled in; nothing is sent until you submit it there.', 'Thông tin phiên bản trên máy này. Báo lỗi sẽ mở GitHub với thông tin đã điền; chỉ gửi khi bạn xác nhận trên GitHub.')}
           />
           <dl className="divide-y divide-line rounded-[10px] border border-line bg-ground-2">
             {versions.map(({ label, value }) => (
@@ -88,10 +90,10 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
           <div className="flex flex-wrap items-center gap-2">
             <CopyButton value={environment} />
             <QuietButton icon={Bug} onClick={open(bugReportUrl({ environment, agent: describeAgent(state.agents) }))}>
-              Report a bug
+              {t('Report a bug', 'Báo lỗi')}
             </QuietButton>
             <QuietButton icon={Lightbulb} onClick={open(LINKS.feature)}>
-              Suggest a feature
+              {t('Suggest a feature', 'Đề xuất tính năng')}
             </QuietButton>
           </div>
         </div>
@@ -99,15 +101,15 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
 
       <Card padded={false}>
         <div className="px-5 pt-5 pb-2">
-          <SectionTitle title="Help" />
+          <SectionTitle title={t('Help', 'Trợ giúp')} />
         </div>
-        <HelpRow icon={BookOpen} title="Guide" detail="Installing, pairing, the agents, and every feature step by step." onClick={open(LINKS.guide)} />
-        <HelpRow icon={MonitorCog} title="This app" detail="Every tab of this window, the tray, updates and uninstalling." onClick={open(LINKS.windowsApp)} />
-        <HelpRow icon={LifeBuoy} title="Troubleshooting" detail="Symptom, cause and fix for setup, pairing, agents and pages." onClick={open(LINKS.troubleshooting)} />
-        <HelpRow icon={ScrollText} title="Release notes" detail="What changed in each version." onClick={open(LINKS.changelog)} />
+        <HelpRow icon={BookOpen} title={t('Guide', 'Hướng dẫn')} detail={t('Installing, pairing, the agents, and every feature step by step.', 'Hướng dẫn cài đặt, ghép nối, agent và các tính năng.')} onClick={open(LINKS.guide)} />
+        <HelpRow icon={MonitorCog} title={t('This app', 'Ứng dụng này')} detail={t('Every tab of this window, the tray, updates and uninstalling.', 'Các mục, khay hệ thống, cập nhật và gỡ cài đặt.')} onClick={open(LINKS.windowsApp)} />
+        <HelpRow icon={LifeBuoy} title={t('Troubleshooting', 'Khắc phục sự cố')} detail={t('Symptom, cause and fix for setup, pairing, agents and pages.', 'Cách xử lý lỗi cài đặt, ghép nối, agent và trang web.')} onClick={open(LINKS.troubleshooting)} />
+        <HelpRow icon={ScrollText} title={t('Release notes', 'Ghi chú phiên bản')} detail={t('What changed in each version.', 'Các thay đổi trong từng phiên bản.')} onClick={open(LINKS.changelog)} />
         <div className="border-t border-line px-5 py-3.5">
           <QuietButton icon={RotateCcw} onClick={() => model.showPreflight()}>
-            Run the checks again
+            {t('Run the checks again', 'Kiểm tra lại')}
           </QuietButton>
         </div>
       </Card>

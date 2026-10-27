@@ -118,12 +118,6 @@ export interface State {
 
 const MINIMUM_NODE = 20;
 
-/** What to do once the store has added the extension; the code is there for a copy that asks for one. */
-const AFTER_ADDING: Record<PairingMode, (browser: string) => string> = {
-  auto: () => 'It connects by itself. If it asks for a code, use the one below.',
-  ask: () => 'Allow it here when it asks to connect. If it asks for a code instead, use the one below.',
-  code: (browser) => `Then click Browsentic in ${browser}’s toolbar and enter the code below.`,
-};
 const FINISH_UPDATE = 'browsentic/finishUpdateOnLaunch';
 const APPEARANCE = 'browsentic/appearance';
 const START_ON_LAUNCH = 'browsentic/startDaemonOnLaunch';
@@ -273,8 +267,9 @@ export class Model {
   /** The browsers worth a row: found on this computer or already paired, else the usual few to try. */
   get offeredBrowsers() {
     const rows = this.state.browserRows;
-    const found = rows.filter((row) => row.installed || row.sessions.length > 0);
-    return found.length ? found : rows.filter((row) => ['chrome', 'edge', 'brave', 'firefox'].includes(row.id));
+    const chromium = rows.filter((row) => row.id !== 'firefox');
+    const found = chromium.filter((row) => row.installed || row.sessions.length > 0);
+    return found.length ? found : chromium.filter((row) => ['chrome', 'edge', 'brave'].includes(row.id));
   }
 
   // Preflight
@@ -836,16 +831,15 @@ export class Model {
     }
   }
 
-  /**
-   * Opens the browser's store page in that browser and hands out the code its side panel asks for. The
-   * command opens it where it found the browser; anywhere else, the default browser gets the page.
-   */
+  /** Writes this fork's bundled extension and opens the selected browser's extensions manager. */
   addExtension(row: BrowserRow) {
     return this.perform(`add:${row.id}`, async () => {
-      const result = parseJson<SetupResult>(await this.backend.cli(['setup', '--browser', row.id, '--no-wait', '--no-self-update', '--json'], 120), 'setup');
-      if (!result.chosen?.opened) await this.backend.openUrl(row.storeUrl);
+      const result = parseJson<SetupResult>(await this.backend.cli(['setup', '--unpacked', '--browser', row.id, '--no-wait', '--no-self-update', '--json'], 120), 'setup');
+      this.set({ stamp: await this.backend.extensionStamp() });
       if (result.pairingCode && result.expiresAt) this.set({ pairing: { code: result.pairingCode, expiresAt: result.expiresAt } });
-      this.say(`${row.steps[0]} ${AFTER_ADDING[this.state.pairingMode ?? 'code'](row.label)}`);
+      const browser = this.state.browsers.find((candidate) => candidate.name.toLowerCase().includes(row.label.toLowerCase()));
+      if (browser) await this.openExtensionsPage(browser);
+      this.say(`Tuhamho Brow’s extension is ready. ${browser ? `${browser.name}’s extensions page is open and the folder path is copied. ` : ''}Turn on Developer mode, choose “Load unpacked”, then paste the folder path.`);
     });
   }
 

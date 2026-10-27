@@ -6,6 +6,7 @@ import type { Backend } from './backend';
 import { MainView } from './views/main';
 import { PairRequestQueue } from './views/pair-request';
 import { PreflightView } from './views/preflight';
+import { LanguageProvider } from './language';
 
 const darkQuery = () => window.matchMedia('(prefers-color-scheme: dark)');
 
@@ -63,17 +64,19 @@ export function App({ model, backend }: { model: Model; backend: Backend }) {
   useEffect(() => model.start(), [model]);
 
   return (
-    <div className="relative h-full text-ink">
-      <Backdrop />
-      <div className="relative h-full">
-        {state.phase === 'preflight' ? <PreflightView model={model} state={state} /> : <MainView model={model} state={state} />}
-      </div>
-      <PairRequestQueue model={model} state={state} />
-      {state.notice && (
-        <div key={state.notice.id} className="enter pointer-events-auto fixed inset-x-0 bottom-5.5 z-[60] flex justify-center px-6">
-          <NoticeBanner text={state.notice.text} isError={state.notice.isError} />
+    <LanguageProvider>
+      <div className="relative h-full text-ink">
+        <Backdrop />
+        <div className="relative h-full">
+          {state.phase === 'preflight' ? <PreflightView model={model} state={state} /> : <MainView model={model} state={state} />}
         </div>
-      )}
-    </div>
+        <PairRequestQueue model={model} state={state} />
+        {state.notice && (
+          <div key={state.notice.id} className="enter pointer-events-auto fixed inset-x-0 bottom-5.5 z-[60] flex justify-center px-6">
+            <NoticeBanner text={state.notice.text} isError={state.notice.isError} />
+          </div>
+        )}
+      </div>
+    </LanguageProvider>
   );
 }

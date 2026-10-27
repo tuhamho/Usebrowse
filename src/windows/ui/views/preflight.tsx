@@ -5,6 +5,7 @@ import {
   CircleCheck,
   Globe,
   Hexagon,
+  Languages,
   Monitor,
   OctagonX,
   RefreshCw,
@@ -16,6 +17,7 @@ import {
 
 import { Logo } from '@/extension/components/brand';
 import { cn } from '@/lib/utils';
+import { useLanguage } from '../language';
 import { PrimaryButton, QuietButton, Spinner } from '../components';
 import { CHECKS, INSTALLS_AUTOMATICALLY, needsAttention, type CheckId, type CheckState, type Model, type State } from '../model';
 
@@ -28,6 +30,7 @@ const CHECK: Record<CheckId, { title: string; icon: LucideIcon }> = {
 };
 
 export function PreflightView({ model, state }: { model: Model; state: State }) {
+  const { language, setLanguage, t } = useLanguage();
   const headline = state.fixing
     ? 'Installing what is missing'
     : state.preflightBusy
@@ -37,11 +40,19 @@ export function PreflightView({ model, state }: { model: Model; state: State }) 
         : 'Everything is in place';
 
   return (
-    <div className="enter flex h-full flex-col items-center overflow-y-auto px-6">
+    <div className="enter relative flex h-full flex-col items-center overflow-y-auto px-6">
+      <button type="button" onClick={() => setLanguage(language === 'en' ? 'vi' : 'en')} className="absolute top-5 right-6 flex items-center gap-2 rounded-lg border border-line bg-surface/70 px-3 py-2 text-xs font-medium text-ink-dim hover:text-ink">
+        <Languages className="size-3.5" /> {language === 'en' ? 'Tiếng Việt' : 'English'}
+      </button>
       <div className="min-h-4 flex-1" />
       <Beacon active={state.preflightBusy || state.fixing} settled={model.canEnter && !state.preflightBusy} />
-      <h1 className="mt-3 font-display text-[30px] font-bold text-ink">Browsentic</h1>
-      <p className="mt-1 text-[13px] text-ink-dim">{headline}</p>
+      <h1 className="mt-3 font-display text-[30px] font-bold text-ink">Tuhamho Brow</h1>
+      <p className="mt-1 text-[13px] text-ink-dim">{t(headline, ({
+        'Installing what is missing': 'Đang cài đặt thành phần còn thiếu',
+        'Checking what this computer already has': 'Đang kiểm tra máy tính',
+        'A few things are missing. One click installs them': 'Còn thiếu một vài thành phần. Nhấn một lần để cài đặt',
+        'Everything is in place': 'Mọi thứ đã sẵn sàng',
+      } as const)[headline])}</p>
 
       <div className="mt-5 w-[600px] max-w-full space-y-1.5">
         {CHECKS.map((id) => (
@@ -53,23 +64,23 @@ export function PreflightView({ model, state }: { model: Model; state: State }) 
         {!state.preflightBusy &&
           (model.needsSetup ? (
             <PrimaryButton icon={WandSparkles} disabled={state.fixing} onClick={() => void model.setUpEverything()}>
-              {state.fixing ? 'Setting up…' : 'Set up everything'}
+              {state.fixing ? t('Setting up…', 'Đang thiết lập…') : t('Set up everything', 'Thiết lập tất cả')}
             </PrimaryButton>
           ) : (
             <PrimaryButton icon={ArrowRight} onClick={() => model.enter()}>
-              Open Browsentic
+              {t('Open Tuhamho Brow', 'Mở Tuhamho Brow')}
             </PrimaryButton>
           ))}
         {!state.preflightBusy && (
           <QuietButton icon={RefreshCw} disabled={state.fixing} onClick={() => void model.runPreflight()}>
-            Check again
+            {t('Check again', 'Kiểm tra lại')}
           </QuietButton>
         )}
       </div>
 
       <div className="min-h-4 flex-1" />
       <p className="pb-4 text-[11px] text-ink-faint">
-        Everything Browsentic installs stays in %USERPROFILE%\.browsentic and %USERPROFILE%\browsentic. No administrator, no account.
+        {t('Everything Tuhamho Brow installs stays in your user folder. No administrator or account needed.', 'Tuhamho Brow chỉ cài trong thư mục người dùng. Không cần quyền quản trị hay tài khoản.')}
       </p>
     </div>
   );
@@ -109,7 +120,9 @@ function Beacon({ active, settled }: { active: boolean; settled: boolean }) {
 }
 
 function CheckRow({ id, state, model, busy, hasNode }: { id: CheckId; state: CheckState; model: Model; busy: boolean; hasNode: boolean }) {
-  const { title, icon: Icon } = CHECK[id];
+  const { t } = useLanguage();
+  const { title: englishTitle, icon: Icon } = CHECK[id];
+  const title = t(englishTitle, ({ system: 'Máy tính này', node: 'Node.js runtime', command: 'Tuhamho Brow Bridge', browser: 'Trình duyệt', agent: 'AI agent' } as const)[id]);
   const detail =
     state.kind === 'waiting' ? 'Waiting' : state.kind === 'checking' ? 'Checking…' : state.text;
   const action = busy
