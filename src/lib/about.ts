@@ -1,24 +1,24 @@
 import { AGENTS, activeRunner, type AgentState } from '@/lib/agents/catalog';
 
-const REPOSITORY = 'https://github.com/imshaikot/browsentic';
+const REPOSITORY = 'https://github.com/tuhamho/Usebrowse';
 
 export const LINKS = {
-  author: 'https://github.com/imshaikot',
+  author: 'https://github.com/tuhamho',
   repository: REPOSITORY,
-  site: 'https://browsentic.com',
-  guide: 'https://browsentic.com/docs/guide/',
-  pairing: 'https://browsentic.com/docs/guide/install/#3-pair-them-once',
-  installGuide: 'https://browsentic.com/docs/guide/install/',
-  troubleshooting: 'https://browsentic.com/docs/guide/troubleshooting/',
-  windowsApp: 'https://browsentic.com/docs/guide/windows-app/',
-  changelog: 'https://browsentic.com/changelog/',
+  site: REPOSITORY,
+  guide: `${REPOSITORY}#readme`,
+  pairing: `${REPOSITORY}#readme`,
+  installGuide: `${REPOSITORY}#readme`,
+  troubleshooting: `${REPOSITORY}/issues`,
+  windowsApp: `${REPOSITORY}#readme`,
+  changelog: `${REPOSITORY}/releases`,
   feature: `${REPOSITORY}/issues/new?template=capability.yml`,
 } as const;
 
-export const AUTHOR = 'imshaikot';
+export const AUTHOR = 'tuhamho';
 
 export const STAR_ASK =
-  'Browsentic is free and open source — no API key, no subscription, no account. A star on GitHub is how the next person finds it.';
+  'Tuhamho Brow is free and open source. Star the project on GitHub to follow its development.';
 
 export interface VersionRow {
   label: string;

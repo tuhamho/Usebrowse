@@ -37,10 +37,10 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
         <div className="flex items-center gap-4">
           <Logo className="size-12 shrink-0 text-brand" />
           <div className="min-w-0 flex-1">
-            <SectionTitle title="Browsentic" subtitle={`${state.info?.version ?? ''} · your browser’s superpower · free and open source, Apache 2.0.`} />
+            <SectionTitle title="Tuhamho Brow" subtitle={`${state.info?.version ?? ''} · your browser’s superpower · free and open source, Apache 2.0.`} />
           </div>
           <QuietButton icon={ExternalLink} onClick={open(LINKS.site)}>
-            browsentic.com
+            GitHub
           </QuietButton>
           <QuietButton icon={ExternalLink} onClick={open(LINKS.repository)}>
             Source
@@ -52,7 +52,7 @@ export function AboutView({ model, state }: { model: Model; state: State }) {
         <div className="space-y-4">
           <div className="flex items-center gap-4">
             <div className="min-w-0 flex-1">
-              <SectionTitle title={`Made by ${AUTHOR}`} subtitle="Builds and maintains Browsentic." />
+              <SectionTitle title={`Made by ${AUTHOR}`} subtitle="Builds and maintains Tuhamho Brow." />
             </div>
             <QuietButton icon={ExternalLink} onClick={open(LINKS.author)}>
               GitHub profile

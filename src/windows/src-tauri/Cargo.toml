@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [[bin]]
-name = "Browsentic"
+name = "tuhamho-brow"
 path = "src/main.rs"
 
 [build-dependencies]
